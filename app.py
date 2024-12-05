@@ -27,8 +27,10 @@ async def lifespan(app: FastAPI):
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
 
-# Hardcoded database path
-DB_PATH = r"D:\EPR Data\Updated db'\knowledge_base.db"
+# Directory Paths
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_FILES_DIR = os.path.join(CURRENT_DIR)  # Directory for static files
+DB_PATH = os.path.join(CURRENT_DIR, "knowledge_base.db")  # Path to SQLite database
 
 # Hugging Face token
 hf_token = "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"
