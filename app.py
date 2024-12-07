@@ -27,28 +27,26 @@ async def lifespan(app: FastAPI):
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
 
-# Directory Paths
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_FILES_DIR = os.path.join(CURRENT_DIR)  # Directory for static files
-DB_PATH = os.path.join(CURRENT_DIR, "knowledge_base.db")  # Path to SQLite database
+STATIC_FILES_DIR = os.path.join(CURRENT_DIR, "static")
+TEMPLATES_DIR = os.path.join(CURRENT_DIR, "templates")
+
+# Mount static files
+app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
+
 
 # Hugging Face token
 hf_token = "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"
 
-# Define the directory for static files
-STATIC_FILES_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Mount static files under /static
-app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
 
 # Serve `index.html` for root route
 @app.get("/")
 async def read_root():
     """Serve the index.html file."""
-    index_file = os.path.join(STATIC_FILES_DIR, "index.html")
+    index_file = os.path.join(TEMPLATES_DIR, "index.html")
     if os.path.exists(index_file):
         return FileResponse(index_file)
     raise HTTPException(status_code=404, detail="Frontend index.html not found")
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
