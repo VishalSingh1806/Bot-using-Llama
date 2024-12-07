@@ -38,10 +38,9 @@ hf_token = "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"
 # Define the directory for static files
 STATIC_FILES_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Mount static files
 app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
 
-# Serve index.html for root route
+# Serve `index.html` for root route
 @app.get("/")
 async def read_root():
     """Serve the index.html file."""
@@ -49,7 +48,6 @@ async def read_root():
     if os.path.exists(index_file):
         return FileResponse(index_file)
     raise HTTPException(status_code=404, detail="Frontend index.html not found")
-
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
