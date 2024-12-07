@@ -176,7 +176,7 @@ async def chat_endpoint(request: Request):
             Database Answer: "{answer}"
 
             User Question: "{question}"
-            """
+            
             try:
                 # Generate a conversational response using LLaMA
                 inputs = llama_tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
