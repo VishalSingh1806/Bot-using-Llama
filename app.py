@@ -27,6 +27,7 @@ async def lifespan(app: FastAPI):
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
 
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_FILES_DIR = os.path.join(CURRENT_DIR, "static")
 TEMPLATES_DIR = os.path.join(CURRENT_DIR, "templates")
 
