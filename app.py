@@ -19,25 +19,23 @@ logging.basicConfig(level=logging.DEBUG)
 async def lifespan(app: FastAPI):
     """Handle application startup and shutdown."""
     logging.info("Application startup: Initializing resources.")
-    # Add startup tasks here (e.g., model loading, database connections)
     yield
     logging.info("Application shutdown: Cleaning up resources.")
-    # Add cleanup tasks here (e.g., closing database connections)
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
 
+# Directory paths
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_FILES_DIR = os.path.join(CURRENT_DIR, "static")
 TEMPLATES_DIR = os.path.join(CURRENT_DIR, "templates")
+DB_PATH = os.path.join(CURRENT_DIR, "knowledge_base.db")
 
 # Mount static files
 app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
 
-
 # Hugging Face token
 hf_token = "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"
-
 
 # Serve `index.html` for root route
 @app.get("/")
@@ -62,35 +60,31 @@ try:
     model = SentenceTransformer("all-MiniLM-L6-v2")
     logging.info("Sentence-BERT model loaded successfully.")
 except Exception as e:
+    logging.error(f"Failed to load Sentence-BERT model: {e}")
     raise RuntimeError(f"Failed to load Sentence-BERT model: {e}")
 
 # Load Hugging Face LLaMA 2 model
 try:
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     llama_tokenizer = AutoTokenizer.from_pretrained(
-    "meta-llama/Llama-2-7b-chat-hf",  # Use a valid model ID
-    token=hf_token
+        "meta-llama/Llama-2-7b-chat-hf",
+        token=hf_token
     )
     llama_model = AutoModelForCausalLM.from_pretrained(
         "meta-llama/Llama-2-7b-chat-hf",
         device_map="auto",
-        torch_dtype=torch.float16,
-        low_cpu_mem_usage=True,
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
         token=hf_token
-)
-
-    llama_model.eval()  # Set model to evaluation mode
-
+    ).to(device)
+    llama_model.eval()
     logging.info("LLaMA 2 model loaded successfully.")
 except Exception as e:
+    logging.error(f"Failed to load LLaMA 2 model: {e}")
     raise RuntimeError(f"Failed to load LLaMA 2 model: {e}")
 
 # Suppress symlink warnings for Hugging Face cache (Windows-specific)
 import warnings
-warnings.filterwarnings(
-    "ignore",
-    category=UserWarning,
-    message="cache-system uses symlinks by default"
-)
+warnings.filterwarnings("ignore", category=UserWarning, message="cache-system uses symlinks by default")
 
 # Utility functions
 def connect_db():
@@ -101,7 +95,7 @@ def connect_db():
         logging.error(f"Database connection error: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed.")
 
-def compute_embedding(text):
+def compute_embedding(text: str):
     """Compute embedding for a given text using Sentence-BERT."""
     return model.encode(text).reshape(1, -1)
 
@@ -153,65 +147,46 @@ async def chat_endpoint(request: Request):
     """
     Handle user queries by fetching answers from the database
     and rephrasing them with LLaMA for conversational flow.
-    If no answer is found in the database, return a polite, non-speculative message.
     """
     try:
-        # Parse user input
         data = await request.json()
         question = data.get("message", "").strip()
 
         if not question:
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Step 1: Fetch Answer from Database
+        # Fetch answer from the database
         user_embedding = compute_embedding(question)
         answer, confidence = query_validated_qa(user_embedding)
 
-        # Step 2: If answer is found, rephrase using LLaMA
         if answer:
-            # Create a prompt for LLaMA
             prompt = f"""
-            You are a helpful assistant engaged in a conversation. Rephrase the following factual information to match the conversational tone of the current discussion:
-
+            Rephrase the following factual information in a conversational tone:
             Database Answer: "{answer}"
-
             User Question: "{question}"
-            
-            try:
-                # Generate a conversational response using LLaMA
-                inputs = llama_tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
-                outputs = llama_model.generate(
-                    **inputs,
-                    max_new_tokens=100,
-                    do_sample=True,
-                    top_k=50,
-                    temperature=0.7
-                )
-                enriched_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
+            """
+            inputs = llama_tokenizer(prompt, return_tensors="pt").to(device)
+            outputs = llama_model.generate(
+                **inputs,
+                max_new_tokens=100,
+                do_sample=True,
+                top_k=50,
+                temperature=0.7
+            )
+            enriched_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
+            return {
+                "answer": enriched_response,
+                "confidence": confidence,
+                "source": "database + llama",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
 
-                return {
-                    "answer": enriched_response,
-                    "confidence": confidence,
-                    "source": "database + llama",
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                }
-            except Exception as llama_error:
-                logging.error(f"LLaMA rephrasing error: {llama_error}")
-                return {
-                    "answer": "An error occurred while generating a conversational response. Please try again.",
-                    "confidence": confidence,
-                    "source": "database",
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                }
-
-        # Step 3: No Database Match
         return {
-            "answer": "I'm sorry, I couldn't find any relevant information in the database.",
+            "answer": "I'm sorry, I couldn't find relevant information in the database.",
             "confidence": 0.0,
             "source": "database",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-
     except Exception as e:
         logging.error(f"Error in /chat endpoint: {e}")
         return {
@@ -241,7 +216,6 @@ async def add_to_validated_qa(request: Request):
         )
         conn.commit()
         conn.close()
-
         return {"message": "Question-Answer pair added successfully."}
     except sqlite3.Error as e:
         logging.error(f"Database error: {e}")
@@ -262,26 +236,20 @@ def list_sections():
         logging.error(f"Database error: {e}")
         raise HTTPException(status_code=500, detail="Database Error")
 
-
 @app.post("/test-llama")
 async def test_llama(prompt: str):
     """Test the LLaMA 2 model with a given prompt."""
     try:
-        # Tokenize the input prompt
-        inputs = llama_tokenizer(prompt, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Generate response
+        inputs = llama_tokenizer(prompt, return_tensors="pt").to(device)
         outputs = llama_model.generate(
-        **inputs,
-        max_new_tokens=40,  # Reduce token generation limit
-        do_sample=True,
-        top_k=20,           # Limit sampling diversity for smaller models
-        temperature=0.7     # Balance creativity with relevance
-    )
-
-
-        # Decode and return the response
+            **inputs,
+            max_new_tokens=40,
+            do_sample=True,
+            top_k=20,
+            temperature=0.7
+        )
         response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
         return {"prompt": prompt, "response": response}
     except Exception as e:
+        logging.error(f"Error in /test-llama endpoint: {e}")
         return {"error": str(e)}
