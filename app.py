@@ -63,7 +63,7 @@ except Exception as e:
     logging.error(f"Failed to load Sentence-BERT model: {e}")
     raise RuntimeError(f"Failed to load Sentence-BERT model: {e}")
 
-# Load Hugging Face LLaMA 2 model
+# Adjust LLaMA 2 model loading
 try:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     llama_tokenizer = AutoTokenizer.from_pretrained(
@@ -72,15 +72,18 @@ try:
     )
     llama_model = AutoModelForCausalLM.from_pretrained(
         "meta-llama/Llama-2-7b-chat-hf",
-        device_map="auto",
+        device_map="auto" if device == "cuda" else None,
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        token=hf_token
-    ).to(device)
+        low_cpu_mem_usage=True,
+        offload_folder="./offload"  # Directory for offloading if needed
+    ).to(device if device == "cuda" else "cpu")
+
     llama_model.eval()
     logging.info("LLaMA 2 model loaded successfully.")
 except Exception as e:
     logging.error(f"Failed to load LLaMA 2 model: {e}")
     raise RuntimeError(f"Failed to load LLaMA 2 model: {e}")
+
 
 # Suppress symlink warnings for Hugging Face cache (Windows-specific)
 import warnings
