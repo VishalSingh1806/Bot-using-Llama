@@ -38,6 +38,7 @@ hf_token = "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"
 # Define the directory for static files
 STATIC_FILES_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Mount static files under /static
 app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
 
 # Serve `index.html` for root route
