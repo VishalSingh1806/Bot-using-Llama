@@ -168,7 +168,7 @@ async def chat_endpoint(request: Request):
         # Step 2: Query the database for a relevant answer
         answer, confidence = query_validated_qa(user_embedding)
 
-        # Step 3: If a valid answer is found, rephrase it using LLaMA
+        # Step 3: Use LLaMA to refine the response if a valid database match is found
         if answer and confidence >= 0.7:
             # Construct the rephrasing prompt
             prompt = f"Rephrase this information in a friendly and conversational tone:\n\n{answer}"
@@ -184,11 +184,15 @@ async def chat_endpoint(request: Request):
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
+            # Post-process to extract only the final response
+            # Assuming LLaMA returns the response prefixed by "Hey there" or similar conversational text
+            final_answer = refined_response.split("\n\n")[-1]  # Get only the final part
+
             # Return the rephrased response
             return {
-                "answer": refined_response,
+                "answer": final_answer,
                 "confidence": confidence,
-                "source": "database + llama",
+                "source": "refined llama",
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
 
@@ -208,6 +212,7 @@ async def chat_endpoint(request: Request):
             "source": "error",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+
 
 @app.post("/add")
 async def add_to_validated_qa(request: Request):
