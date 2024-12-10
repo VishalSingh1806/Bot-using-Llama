@@ -169,20 +169,27 @@ async def chat_endpoint(request: Request):
 
         # Step 3: Return database-only responses
         if answer and confidence >= 0.7:
-            return {
-                "answer": answer,
-                "confidence": confidence,
-                "source": "database",
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
-
-        # Fallback response
+            prompt = f"""
+            You are a helpful assistant. Rephrase the following factual information in a friendly and conversational tone:
+            Database Answer: "{answer}"
+            User Question: "{question}"
+            """
+            inputs = llama_tokenizer(prompt, return_tensors="pt").to(device)
+            outputs = llama_model.generate(
+                **inputs,
+                max_new_tokens=100,
+                do_sample=True,
+                top_k=50,
+                temperature=0.7
+        )
+        conversational_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
         return {
-            "answer": "I'm sorry, I couldn't find relevant information in the database.",
-            "confidence": 0.0,
-            "source": "fallback",
+            "answer": conversational_response,
+            "confidence": confidence,
+            "source": "database + llama",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+
     except Exception as e:
         logging.error(f"Error in /chat endpoint: {e}")
         return {
@@ -191,6 +198,7 @@ async def chat_endpoint(request: Request):
             "source": "error",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+
 
 @app.post("/add")
 async def add_to_validated_qa(request: Request):
