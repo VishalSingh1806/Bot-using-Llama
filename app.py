@@ -11,6 +11,27 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 import logging
 import os
+import random
+
+# Predefined openings
+OPENINGS = {
+    "default": [
+        "Here's what I found:",
+        "Let me explain:",
+        "Absolutely! Here's the answer:",
+        "Sure! Here's the information you need:",
+    ],
+    "fact": [
+        "Did you know that...",
+        "Here's an interesting fact:",
+        "Let me share this with you:",
+    ],
+    "time": [
+        "Oh, this is interesting! It happened in...",
+        "Here's the timeline:",
+    ],
+}
+
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -143,6 +164,16 @@ def search_sections(query: str):
         logging.error(f"Database error: {e}")
         return []
 
+def get_dynamic_opening(query: str) -> str:
+    """Determine a dynamic opening based on the query type."""
+    query = query.lower()
+    if any(keyword in query for keyword in ["when", "date", "time", "timeline"]):
+        return random.choice(OPENINGS["time"])
+    elif any(keyword in query for keyword in ["who", "what", "fact"]):
+        return random.choice(OPENINGS["fact"])
+    else:
+        return random.choice(OPENINGS["default"]
+
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
@@ -169,7 +200,7 @@ async def chat_endpoint(request: Request):
         answer, confidence = query_validated_qa(user_embedding)
 
         # Step 3: Use LLaMA to refine the response if a valid database match is found
-        if answer and confidence >= 0.8:
+        if answer and confidence >= 0.7:
             # Construct the rephrasing prompt
             prompt = f"Rephrase this information in a friendly and conversational tone:\n\n{answer}"
 
@@ -177,22 +208,22 @@ async def chat_endpoint(request: Request):
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
                 **inputs,
-                max_new_tokens=200,  # Allow more room for conversational rephrasing
+                max_new_tokens=150,
                 do_sample=True,
                 top_k=50,
                 temperature=0.7
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
-            # Post-process to extract only the final response
-            # Assuming LLaMA returns the response prefixed by "Hey there" or similar conversational text
-            final_answer = refined_response.split("\n\n")[-1]  # Get only the final part
+            # Post-process to add dynamic opening
+            opening = get_dynamic_opening(question)
+            final_answer = f"{opening} {refined_response}"
 
             # Return the rephrased response
             return {
                 "answer": final_answer,
                 "confidence": confidence,
-                "source": "refined llama",
+                "source": "database + llama",
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
 
@@ -212,7 +243,6 @@ async def chat_endpoint(request: Request):
             "source": "error",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-
 
 @app.post("/add")
 async def add_to_validated_qa(request: Request):
