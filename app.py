@@ -74,6 +74,7 @@ try:
         "meta-llama/Llama-2-7b-chat-hf",
         device_map="auto",  # Let accelerate handle device placement
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        offload_folder = "./offload",
         low_cpu_mem_usage=True
     )
 
