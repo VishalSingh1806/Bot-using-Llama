@@ -167,29 +167,36 @@ async def chat_endpoint(request: Request):
         # Step 2: Query the database
         answer, confidence = query_validated_qa(user_embedding)
 
-        # Step 3: Return database-only responses
+        # Step 3: Use LLaMA to refine the response if a valid database match is found
         if answer and confidence >= 0.7:
             prompt = f"""
-            You are a helpful assistant. Rephrase the following factual information in a friendly and conversational tone:
-            Database Answer: "{answer}"
-            User Question: "{question}"
+            You are a helpful assistant. Rephrase the following factual information into a friendly and conversational tone:
+            "{answer}"
             """
-            inputs = llama_tokenizer(prompt, return_tensors="pt").to(device)
+            inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
                 **inputs,
                 max_new_tokens=100,
                 do_sample=True,
                 top_k=50,
                 temperature=0.7
-        )
-        conversational_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
+            )
+            refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+
+            return {
+                "answer": refined_response,
+                "confidence": confidence,
+                "source": "refined llama",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+        # Step 4: Fallback response for unmatched queries
         return {
-            "answer": conversational_response,
-            "confidence": confidence,
-            "source": "database + llama",
+            "answer": "I'm sorry, I couldn't find relevant information in the database.",
+            "confidence": 0.0,
+            "source": "fallback",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-
     except Exception as e:
         logging.error(f"Error in /chat endpoint: {e}")
         return {
@@ -198,7 +205,6 @@ async def chat_endpoint(request: Request):
             "source": "error",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-
 
 @app.post("/add")
 async def add_to_validated_qa(request: Request):
