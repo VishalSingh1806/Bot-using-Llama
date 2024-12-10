@@ -169,7 +169,7 @@ async def chat_endpoint(request: Request):
         answer, confidence = query_validated_qa(user_embedding)
 
         # Step 3: Use LLaMA to refine the response if a valid database match is found
-        if answer and confidence >= 0.7:
+        if answer and confidence >= 0.8:
             # Construct the rephrasing prompt
             prompt = f"Rephrase this information in a friendly and conversational tone:\n\n{answer}"
 
@@ -177,7 +177,7 @@ async def chat_endpoint(request: Request):
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
                 **inputs,
-                max_new_tokens=250,  # Allow more room for conversational rephrasing
+                max_new_tokens=200,  # Allow more room for conversational rephrasing
                 do_sample=True,
                 top_k=50,
                 temperature=0.7
