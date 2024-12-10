@@ -256,3 +256,7 @@ async def test_llama(prompt: str):
     except Exception as e:
         logging.error(f"Error in /test-llama endpoint: {e}")
         return {"error": str(e)}
+        
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse("static/favicon.ico")
