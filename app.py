@@ -172,7 +172,7 @@ def get_dynamic_opening(query: str) -> str:
     elif any(keyword in query for keyword in ["who", "what", "fact"]):
         return random.choice(OPENINGS["fact"])
     else:
-        return random.choice(OPENINGS["default"]
+        return random.choice(OPENINGS["default"])
 
 @app.post("/chat")
 async def chat_endpoint(request: Request):
