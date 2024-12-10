@@ -65,24 +65,24 @@ except Exception as e:
 
 # Adjust LLaMA 2 model loading
 try:
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"  # Use cuda:0 explicitly
     llama_tokenizer = AutoTokenizer.from_pretrained(
         "meta-llama/Llama-2-7b-chat-hf",
         use_auth_token=hf_token
     )
     llama_model = AutoModelForCausalLM.from_pretrained(
         "meta-llama/Llama-2-7b-chat-hf",
-        device_map="auto",  # Let accelerate handle device placement
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        offload_folder = "./offload",
+        device_map=None,  # Disable automatic device mapping
+        torch_dtype=torch.float16 if "cuda" in device else torch.float32,
         low_cpu_mem_usage=True
-    )
+    ).to(device)  # Move model to cuda:0
 
-    llama_model.eval()  # Set model to evaluation mode
-    logging.info("LLaMA 2 model loaded successfully.")
+    llama_model.eval()
+    logging.info("LLaMA 2 model loaded successfully on %s.", device)
 except Exception as e:
     logging.error(f"Failed to load LLaMA 2 model: {e}")
     raise RuntimeError(f"Failed to load LLaMA 2 model: {e}")
+
 
 
 
@@ -148,10 +148,6 @@ def search_sections(query: str):
 
 @app.post("/chat")
 async def chat_endpoint(request: Request):
-    """
-    Handle user queries by fetching answers from the database
-    and rephrasing them with LLaMA for conversational flow.
-    """
     try:
         data = await request.json()
         question = data.get("message", "").strip()
@@ -159,17 +155,21 @@ async def chat_endpoint(request: Request):
         if not question:
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Fetch answer from the database
+        # Step 1: Compute embedding
         user_embedding = compute_embedding(question)
+
+        # Step 2: Query the database
         answer, confidence = query_validated_qa(user_embedding)
 
+        # Step 3: If answer exists, rephrase using LLaMA
         if answer:
             prompt = f"""
             Rephrase the following factual information in a conversational tone:
             Database Answer: "{answer}"
             User Question: "{question}"
             """
-            inputs = llama_tokenizer(prompt, return_tensors="pt").to(device)
+            # Ensure inputs are on the same device as the model
+            inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)  # Match model device
             outputs = llama_model.generate(
                 **inputs,
                 max_new_tokens=100,
