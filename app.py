@@ -146,13 +146,14 @@ def search_sections(query: str):
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
+        # Parse the user query
         data = await request.json()
         question = data.get("message", "").strip()
 
         if not question:
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Handle generic greetings
+        # Handle greetings separately
         if question.lower() in ["hello", "hi", "hey"]:
             return {
                 "answer": "Hello! How can I assist you today?",
@@ -161,42 +162,44 @@ async def chat_endpoint(request: Request):
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
 
-        # Step 1: Compute embedding
+        # Step 1: Compute embedding for the question
         user_embedding = compute_embedding(question)
 
-        # Step 2: Query the database
+        # Step 2: Query the database for a relevant answer
         answer, confidence = query_validated_qa(user_embedding)
 
-        # Step 3: Use LLaMA to refine the response if a valid database match is found
+        # Step 3: If a valid answer is found, rephrase it using LLaMA
         if answer and confidence >= 0.7:
-            prompt = f"""
-            You are a helpful assistant. Rephrase the following factual information into a friendly and conversational tone:
-            "{answer}"
-            """
+            # Construct the rephrasing prompt
+            prompt = f"Rephrase this information in a friendly and conversational tone:\n\n{answer}"
+
+            # Tokenize and process with LLaMA
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
                 **inputs,
-                max_new_tokens=100,
+                max_new_tokens=150,  # Allow more room for conversational rephrasing
                 do_sample=True,
                 top_k=50,
                 temperature=0.7
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
+            # Return the rephrased response
             return {
                 "answer": refined_response,
                 "confidence": confidence,
-                "source": "refined llama",
+                "source": "database + llama",
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
 
-        # Step 4: Fallback response for unmatched queries
+        # Step 4: Handle cases where no valid answer is found
         return {
             "answer": "I'm sorry, I couldn't find relevant information in the database.",
             "confidence": 0.0,
-            "source": "fallback",
+            "source": "database",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+
     except Exception as e:
         logging.error(f"Error in /chat endpoint: {e}")
         return {
