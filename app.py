@@ -208,18 +208,18 @@ async def chat_endpoint(request: Request):
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
                 **inputs,
-                max_new_tokens=150,
+                max_new_tokens=150,  # Allow more room for conversational rephrasing
                 do_sample=True,
                 top_k=50,
                 temperature=0.7
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
-            # Post-process to add dynamic opening
-            opening = get_dynamic_opening(question)
-            final_answer = f"{opening} {refined_response}"
+            # Post-process to clean up the output
+            # Extract the part after the conversational opening
+            final_answer = refined_response.split("\n\n")[-1].strip()
 
-            # Return the rephrased response
+            # Return the refined response
             return {
                 "answer": final_answer,
                 "confidence": confidence,
@@ -243,6 +243,7 @@ async def chat_endpoint(request: Request):
             "source": "error",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+
 
 @app.post("/add")
 async def add_to_validated_qa(request: Request):
