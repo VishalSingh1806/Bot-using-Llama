@@ -12,6 +12,7 @@ from sentence_transformers import SentenceTransformer
 import logging
 import os
 import random
+import time
 
 # Predefined openings
 OPENINGS = {
