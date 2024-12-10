@@ -177,6 +177,9 @@ def get_dynamic_opening(query: str) -> str:
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
+        # Start timing
+        start_time = time.time()
+
         # Parse the user query
         data = await request.json()
         question = data.get("message", "").strip()
@@ -186,11 +189,12 @@ async def chat_endpoint(request: Request):
 
         # Handle greetings separately
         if question.lower() in ["hello", "hi", "hey"]:
+            response_time = time.time() - start_time
             return {
                 "answer": "Hello! How can I assist you today?",
                 "confidence": 1.0,
                 "source": "greeting",
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "response_time": f"{response_time:.2f} seconds",
             }
 
         # Step 1: Compute embedding for the question
@@ -208,7 +212,7 @@ async def chat_endpoint(request: Request):
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
                 **inputs,
-                max_new_tokens=200,  # Allow more room for conversational rephrasing
+                max_new_tokens=200,
                 do_sample=True,
                 top_k=50,
                 temperature=0.7
@@ -216,32 +220,36 @@ async def chat_endpoint(request: Request):
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
             # Post-process to clean up the output
-            # Extract the part after the conversational opening
             final_answer = refined_response.split("\n\n")[-1].strip()
 
-            # Return the refined response
+            # Calculate response time
+            response_time = time.time() - start_time
+
+            # Return the refined response with response time
             return {
                 "answer": final_answer,
                 "confidence": confidence,
                 "source": "database + llama",
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "response_time": f"{response_time:.2f} seconds",
             }
 
         # Step 4: Handle cases where no valid answer is found
+        response_time = time.time() - start_time
         return {
             "answer": "I'm sorry, I couldn't find relevant information in the database.",
             "confidence": 0.0,
             "source": "database",
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "response_time": f"{response_time:.2f} seconds",
         }
 
     except Exception as e:
         logging.error(f"Error in /chat endpoint: {e}")
+        response_time = time.time() - start_time
         return {
             "answer": "An internal error occurred. Please try again later.",
             "confidence": 0.0,
             "source": "error",
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "response_time": f"{response_time:.2f} seconds",
         }
 
 
