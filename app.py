@@ -65,26 +65,23 @@ except Exception as e:
 
 # Adjust LLaMA 2 model loading
 try:
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"  # Use cuda:0 explicitly
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
     llama_tokenizer = AutoTokenizer.from_pretrained(
         "meta-llama/Llama-2-7b-chat-hf",
         use_auth_token=hf_token
     )
     llama_model = AutoModelForCausalLM.from_pretrained(
         "meta-llama/Llama-2-7b-chat-hf",
-        device_map=None,  # Disable automatic device mapping
+        device_map=None,
         torch_dtype=torch.float16 if "cuda" in device else torch.float32,
         low_cpu_mem_usage=True
-    ).to(device)  # Move model to cuda:0
+    ).to(device)
 
     llama_model.eval()
     logging.info("LLaMA 2 model loaded successfully on %s.", device)
 except Exception as e:
     logging.error(f"Failed to load LLaMA 2 model: {e}")
     raise RuntimeError(f"Failed to load LLaMA 2 model: {e}")
-
-
-
 
 # Suppress symlink warnings for Hugging Face cache (Windows-specific)
 import warnings
@@ -155,40 +152,35 @@ async def chat_endpoint(request: Request):
         if not question:
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
+        # Handle generic greetings
+        if question.lower() in ["hello", "hi", "hey"]:
+            return {
+                "answer": "Hello! How can I assist you today?",
+                "confidence": 1.0,
+                "source": "greeting",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
         # Step 1: Compute embedding
         user_embedding = compute_embedding(question)
 
         # Step 2: Query the database
         answer, confidence = query_validated_qa(user_embedding)
 
-        # Step 3: If answer exists, rephrase using LLaMA
-        if answer:
-            prompt = f"""
-            Rephrase the following factual information in a conversational tone:
-            Database Answer: "{answer}"
-            User Question: "{question}"
-            """
-            # Ensure inputs are on the same device as the model
-            inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)  # Match model device
-            outputs = llama_model.generate(
-                **inputs,
-                max_new_tokens=100,
-                do_sample=True,
-                top_k=50,
-                temperature=0.7
-            )
-            enriched_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # Step 3: Return database-only responses
+        if answer and confidence >= 0.7:
             return {
-                "answer": enriched_response,
+                "answer": answer,
                 "confidence": confidence,
-                "source": "database + llama",
+                "source": "database",
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
 
+        # Fallback response
         return {
             "answer": "I'm sorry, I couldn't find relevant information in the database.",
             "confidence": 0.0,
-            "source": "database",
+            "source": "fallback",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
     except Exception as e:
@@ -257,7 +249,7 @@ async def test_llama(prompt: str):
     except Exception as e:
         logging.error(f"Error in /test-llama endpoint: {e}")
         return {"error": str(e)}
-        
+
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     return FileResponse("static/favicon.ico")
