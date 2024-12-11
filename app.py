@@ -9,10 +9,12 @@ import sqlite3
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
+from rapidfuzz import fuzz, process
 import logging
 import os
 import random
 import time
+from functools import lru_cache
 
 # Predefined openings
 OPENINGS = {
@@ -38,9 +40,9 @@ OPENINGS = {
 FALLBACK_KB = {
     "what can you do": "I can answer questions about EPR and assist with understanding concepts like plastic waste management, rules, and responsibilities. Try asking something specific!",
     "who made you": "I was developed as a collaborative effort to assist with EPR and related topics using advanced AI capabilities!",
-    "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses."
+    "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses.",
+    "can you help me": "Of course! Ask me about EPR, plastic waste management, or any related topics, and I'll do my best to help.",
 }
-
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 
@@ -85,12 +87,16 @@ app.add_middleware(
 )
 
 # Load Sentence-BERT model
-try:
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    logging.info("Sentence-BERT model loaded successfully.")
-except Exception as e:
-    logging.error(f"Failed to load Sentence-BERT model: {e}")
-    raise RuntimeError(f"Failed to load Sentence-BERT model: {e}")
+@lru_cache(maxsize=1)  # Cache to prevent redundant loading
+def load_sentence_bert():
+    try:
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+        logging.info("Sentence-BERT model loaded successfully.")
+        return model
+    except Exception as e:
+        logging.error(f"Failed to load Sentence-BERT model: {e}")
+        raise RuntimeError(f"Failed to load Sentence-BERT model: {e}")
+
 
 # Adjust LLaMA 2 model loading
 try:
@@ -155,6 +161,13 @@ def query_validated_qa(user_embedding):
         logging.error(f"Database query error: {e}")
         return None, 0.0
 
+def fuzzy_match_fallback(question: str) -> str:
+    """Use fuzzy matching to find the closest fallback response."""
+    match, score = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
+    if score >= 80:  # Set threshold for acceptable match
+        return FALLBACK_KB[match]
+    return None
+
 def search_sections(query: str):
     """Search for terms in the sections table."""
     try:
@@ -182,7 +195,7 @@ def get_dynamic_opening(query: str) -> str:
     else:
         return random.choice(OPENINGS["default"])
 
-# Chat Endpoint with Fallback Behavior
+# Chat Endpoint with Enhanced Fallback and Fuzzy Logic
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
@@ -196,13 +209,14 @@ async def chat_endpoint(request: Request):
         if not question:
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Handle predefined fallback queries
-        if question in FALLBACK_KB:
+        # Handle predefined fallback queries with fuzzy logic
+        fallback_response = fuzzy_match_fallback(question)
+        if fallback_response:
             response_time = time.time() - start_time
             return {
-                "answer": FALLBACK_KB[question],
+                "answer": fallback_response,
                 "confidence": 1.0,
-                "source": "fallback knowledge base",
+                "source": "fuzzy fallback knowledge base",
                 "response_time": f"{response_time:.2f} seconds",
             }
 
@@ -228,13 +242,13 @@ async def chat_endpoint(request: Request):
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
-            # Post-process to clean up the output
-            final_answer = refined_response.split("\n\n")[-1].strip()
+            # Add a dynamic opening
+            opening = get_dynamic_opening(question)
+            final_answer = f"{opening} {refined_response}"
 
             # Calculate response time
             response_time = time.time() - start_time
 
-            # Return the refined response with response time
             return {
                 "answer": final_answer,
                 "confidence": confidence,
