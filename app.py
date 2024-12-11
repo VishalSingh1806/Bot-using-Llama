@@ -223,8 +223,8 @@ async def chat_endpoint(request: Request):
                 **inputs,
                 max_new_tokens=120,
                 do_sample=True,
-                top_k=30,
-                temperature=0.5
+                top_k=40,
+                temperature=0.8
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
