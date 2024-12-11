@@ -221,7 +221,7 @@ async def chat_endpoint(request: Request):
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
                 **inputs,
-                max_new_tokens=110,
+                max_new_tokens=140,
                 do_sample=True,
                 top_k=50,
                 temperature=0.7
