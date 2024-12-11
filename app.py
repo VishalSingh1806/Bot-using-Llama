@@ -148,7 +148,7 @@ def query_validated_qa(user_embedding):
 
         for row in rows:
             # Validate row structure
-            if len(row) != 3 or row[2] is None:
+            if len(row) != 3 or not all(row):  # Check if row has 3 non-null elements
                 logging.error(f"Malformed or incomplete row in ValidatedQA: {row}")
                 continue  # Skip invalid rows
 
