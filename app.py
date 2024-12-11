@@ -146,7 +146,12 @@ def query_validated_qa(user_embedding):
         max_similarity = 0.0
         best_answer = None
 
-        for _, db_answer, db_embedding in rows:
+        for row in rows:
+            if len(row) < 3:  # Ensure the row has the expected structure
+                logging.error(f"Malformed row in ValidatedQA: {row}")
+                continue
+            _, db_answer, db_embedding = row
+
             db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
             similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
             if similarity > max_similarity:
@@ -161,12 +166,15 @@ def query_validated_qa(user_embedding):
         logging.error(f"Database query error: {e}")
         return None, 0.0
 
+
 def fuzzy_match_fallback(question: str) -> str:
     """Use fuzzy matching to find the closest fallback response."""
     match, score = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
     if score >= 80:  # Set threshold for acceptable match
         return FALLBACK_KB[match]
+    logging.warning(f"No close match found for question: '{question}' (Best match: '{match}' with score {score})")
     return None
+
 
 def search_sections(query: str):
     """Search for terms in the sections table."""
