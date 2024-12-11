@@ -147,16 +147,23 @@ def query_validated_qa(user_embedding):
         best_answer = None
 
         for row in rows:
-            if len(row) < 3:  # Ensure the row has the expected structure
-                logging.error(f"Malformed row in ValidatedQA: {row}")
-                continue
+            # Validate row structure
+            if len(row) != 3 or row[2] is None:
+                logging.error(f"Malformed or incomplete row in ValidatedQA: {row}")
+                continue  # Skip invalid rows
+
             _, db_answer, db_embedding = row
 
-            db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
-            similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
-            if similarity > max_similarity:
-                max_similarity = similarity
-                best_answer = db_answer
+            # Convert binary embedding back to NumPy array
+            try:
+                db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
+                similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
+                if similarity > max_similarity:
+                    max_similarity = similarity
+                    best_answer = db_answer
+            except ValueError as e:
+                logging.error(f"Error processing embedding for row: {row} - {e}")
+                continue  # Skip rows with invalid embeddings
 
         conn.close()
         if max_similarity >= 0.7:  # Similarity threshold
