@@ -34,6 +34,13 @@ OPENINGS = {
 }
 
 
+# Fallback Knowledge Base for General Queries
+FALLBACK_KB = {
+    "what can you do": "I can answer questions about EPR and assist with understanding concepts like plastic waste management, rules, and responsibilities. Try asking something specific!",
+    "who made you": "I was developed as a collaborative effort to assist with EPR and related topics using advanced AI capabilities!",
+    "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses."
+}
+
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 
@@ -175,6 +182,7 @@ def get_dynamic_opening(query: str) -> str:
     else:
         return random.choice(OPENINGS["default"])
 
+# Chat Endpoint with Fallback Behavior
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
@@ -183,18 +191,18 @@ async def chat_endpoint(request: Request):
 
         # Parse the user query
         data = await request.json()
-        question = data.get("message", "").strip()
+        question = data.get("message", "").strip().lower()
 
         if not question:
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Handle greetings separately
-        if question.lower() in ["hello", "hi", "hey"]:
+        # Handle predefined fallback queries
+        if question in FALLBACK_KB:
             response_time = time.time() - start_time
             return {
-                "answer": "Hello! How can I assist you today?",
+                "answer": FALLBACK_KB[question],
                 "confidence": 1.0,
-                "source": "greeting",
+                "source": "fallback knowledge base",
                 "response_time": f"{response_time:.2f} seconds",
             }
 
@@ -234,12 +242,12 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{response_time:.2f} seconds",
             }
 
-        # Step 4: Handle cases where no valid answer is found
+        # Step 4: Handle cases where no valid answer is found in database or fallback KB
         response_time = time.time() - start_time
         return {
-            "answer": "I'm sorry, I couldn't find relevant information in the database.",
+            "answer": "I'm sorry, I couldn't find relevant information. Feel free to ask about EPR or related topics!",
             "confidence": 0.0,
-            "source": "database",
+            "source": "fallback response",
             "response_time": f"{response_time:.2f} seconds",
         }
 
@@ -252,7 +260,6 @@ async def chat_endpoint(request: Request):
             "source": "error",
             "response_time": f"{response_time:.2f} seconds",
         }
-
 
 @app.post("/add")
 async def add_to_validated_qa(request: Request):
