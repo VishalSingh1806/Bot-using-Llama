@@ -25,6 +25,9 @@ function checkEnter(event) {
     }
 }
 
+// Define the backend URL dynamically
+const BACKEND_URL = "http://34.41.145.80:8000/chat";
+
 // Send User Message
 async function sendMessage() {
     const userMessage = document.getElementById("userMessage").value.trim();
@@ -41,7 +44,7 @@ async function sendMessage() {
         chatContent.scrollTop = chatContent.scrollHeight;
 
         try {
-            const response = await fetch("http://34.41.145.80:8000/chat", {
+            const response = await fetch(BACKEND_URL, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: userMessage }),
@@ -66,6 +69,7 @@ async function sendMessage() {
         }
     }
 }
+
 
 
 // Add Message to Chat
