@@ -147,15 +147,15 @@ def query_validated_qa(user_embedding):
         best_answer = None
 
         for row in rows:
-            # Validate row structure
-            if len(row) != 3 or not all(row):  # Check if row has 3 non-null elements
-                logging.error(f"Malformed or incomplete row in ValidatedQA: {row}")
-                continue  # Skip invalid rows
+            # Ensure row has exactly 3 valid elements
+            if len(row) != 3 or None in row:
+                logging.error(f"Malformed row in ValidatedQA: {row}")
+                continue
 
-            _, db_answer, db_embedding = row
+            question, db_answer, db_embedding = row
 
-            # Convert binary embedding back to NumPy array
             try:
+                # Convert binary embedding back to NumPy array
                 db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
                 similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
                 if similarity > max_similarity:
@@ -163,11 +163,11 @@ def query_validated_qa(user_embedding):
                     best_answer = db_answer
             except ValueError as e:
                 logging.error(f"Error processing embedding for row: {row} - {e}")
-                continue  # Skip rows with invalid embeddings
+                continue
 
         conn.close()
         if max_similarity >= 0.7:  # Similarity threshold
-            return best_answer, float(max_similarity)
+            return best_answer, max_similarity
         return None, 0.0
     except sqlite3.Error as e:
         logging.error(f"Database query error: {e}")
@@ -224,6 +224,9 @@ async def chat_endpoint(request: Request):
         if not question:
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
+        # Debug log user question
+        logging.debug(f"User question: {question}")
+
         # Handle predefined fallback queries with fuzzy logic
         fallback_response = fuzzy_match_fallback(question)
         if fallback_response:
@@ -237,16 +240,15 @@ async def chat_endpoint(request: Request):
 
         # Step 1: Compute embedding for the question
         user_embedding = compute_embedding(question)
+        logging.debug(f"Computed user embedding: {user_embedding}")
 
         # Step 2: Query the database for a relevant answer
         answer, confidence = query_validated_qa(user_embedding)
+        logging.debug(f"Query result - Answer: {answer}, Confidence: {confidence}")
 
         # Step 3: Use LLaMA to refine the response if a valid database match is found
         if answer and confidence >= 0.8:
-            # Construct the rephrasing prompt
             prompt = f"Rephrase this information in a friendly and conversational tone:\n\n{answer}"
-
-            # Tokenize and process with LLaMA
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
                 **inputs,
@@ -289,6 +291,7 @@ async def chat_endpoint(request: Request):
             "source": "error",
             "response_time": f"{response_time:.2f} seconds",
         }
+
 
 @app.post("/add")
 async def add_to_validated_qa(request: Request):
