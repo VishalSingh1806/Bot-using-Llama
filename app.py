@@ -35,7 +35,6 @@ OPENINGS = {
     ],
 }
 
-
 # Fallback Knowledge Base for General Queries
 FALLBACK_KB = {
     "what can you do": "I can answer questions about EPR and assist with understanding concepts like plastic waste management, rules, and responsibilities. Try asking something specific!",
@@ -43,41 +42,32 @@ FALLBACK_KB = {
     "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses.",
     "can you help me": "Of course! Ask me about EPR, plastic waste management, or any related topics, and I'll do my best to help.",
 }
-# Configure logging
+
 logging.basicConfig(level=logging.DEBUG)
 
-# Define lifespan event handlers
 async def lifespan(app: FastAPI):
-    """Handle application startup and shutdown."""
     logging.info("Application startup: Initializing resources.")
     yield
     logging.info("Application shutdown: Cleaning up resources.")
 
-# Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
 
-# Directory paths
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_FILES_DIR = os.path.join(CURRENT_DIR, "static")
 TEMPLATES_DIR = os.path.join(CURRENT_DIR, "templates")
 DB_PATH = os.path.join(CURRENT_DIR, "knowledge_base.db")
 
-# Mount static files
 app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
 
-# Hugging Face token
 hf_token = "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"
 
-# Serve `index.html` for root route
 @app.get("/")
 async def read_root():
-    """Serve the index.html file."""
     index_file = os.path.join(TEMPLATES_DIR, "index.html")
     if os.path.exists(index_file):
         return FileResponse(index_file)
     raise HTTPException(status_code=404, detail="Frontend index.html not found")
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -86,8 +76,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load Sentence-BERT model
-@lru_cache(maxsize=1)  # Cache to prevent redundant loading
+@lru_cache(maxsize=1)
 def load_sentence_bert():
     try:
         model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -97,8 +86,6 @@ def load_sentence_bert():
         logging.error(f"Failed to load Sentence-BERT model: {e}")
         raise RuntimeError(f"Failed to load Sentence-BERT model: {e}")
 
-
-# Adjust LLaMA 2 model loading
 try:
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     llama_tokenizer = AutoTokenizer.from_pretrained(
@@ -118,13 +105,10 @@ except Exception as e:
     logging.error(f"Failed to load LLaMA 2 model: {e}")
     raise RuntimeError(f"Failed to load LLaMA 2 model: {e}")
 
-# Suppress symlink warnings for Hugging Face cache (Windows-specific)
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="cache-system uses symlinks by default")
 
-# Utility functions
 def connect_db():
-    """Connect to the SQLite database."""
     try:
         return sqlite3.connect(DB_PATH)
     except sqlite3.Error as e:
@@ -132,11 +116,10 @@ def connect_db():
         raise HTTPException(status_code=500, detail="Database connection failed.")
 
 def compute_embedding(text: str):
-    """Compute embedding for a given text using Sentence-BERT."""
+    model = load_sentence_bert()
     return model.encode(text).reshape(1, -1)
 
 def query_validated_qa(user_embedding):
-    """Query the ValidatedQA table for the best match."""
     try:
         conn = connect_db()
         cursor = conn.cursor()
@@ -147,14 +130,12 @@ def query_validated_qa(user_embedding):
         best_answer = None
 
         for row in rows:
-            # Skip rows that don't have exactly 3 non-null elements
             if len(row) != 3 or not all(row):
                 logging.warning(f"Skipping malformed or incomplete row: {row}")
                 continue
 
             question, db_answer, db_embedding = row
 
-            # Safely process embeddings and compute similarity
             try:
                 db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
                 similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
@@ -166,26 +147,21 @@ def query_validated_qa(user_embedding):
                 continue
 
         conn.close()
-        if max_similarity >= 0.7:  # Similarity threshold
+        if max_similarity >= 0.7:
             return best_answer, max_similarity
         return None, 0.0
     except sqlite3.Error as e:
         logging.error(f"Database query error: {e}")
         return None, 0.0
 
-
-
 def fuzzy_match_fallback(question: str) -> str:
-    """Use fuzzy matching to find the closest fallback response."""
     match, score = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
-    if score >= 80:  # Set threshold for acceptable match
+    if score >= 80:
         return FALLBACK_KB[match]
     logging.warning(f"No close match found for question: '{question}' (Best match: '{match}' with score {score})")
     return None
 
-
 def search_sections(query: str):
-    """Search for terms in the sections table."""
     try:
         conn = connect_db()
         cursor = conn.cursor()
@@ -202,7 +178,6 @@ def search_sections(query: str):
         return []
 
 def get_dynamic_opening(query: str) -> str:
-    """Determine a dynamic opening based on the query type."""
     query = query.lower()
     if any(keyword in query for keyword in ["when", "date", "time", "timeline"]):
         return random.choice(OPENINGS["time"])
@@ -211,24 +186,19 @@ def get_dynamic_opening(query: str) -> str:
     else:
         return random.choice(OPENINGS["default"])
 
-# Chat Endpoint with Enhanced Fallback and Fuzzy Logic
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
-        # Start timing
         start_time = time.time()
 
-        # Parse the user query
         data = await request.json()
         question = data.get("message", "").strip().lower()
 
         if not question:
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Debug log user question
         logging.debug(f"User question: {question}")
 
-        # Handle predefined fallback queries with fuzzy logic
         fallback_response = fuzzy_match_fallback(question)
         if fallback_response:
             response_time = time.time() - start_time
@@ -239,15 +209,12 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{response_time:.2f} seconds",
             }
 
-        # Step 1: Compute embedding for the question
         user_embedding = compute_embedding(question)
         logging.debug(f"Computed user embedding: {user_embedding}")
 
-        # Step 2: Query the database for a relevant answer
         answer, confidence = query_validated_qa(user_embedding)
         logging.debug(f"Query result - Answer: {answer}, Confidence: {confidence}")
 
-        # Step 3: Use LLaMA to refine the response if a valid database match is found
         if answer and confidence >= 0.8:
             prompt = f"Rephrase this information in a friendly and conversational tone:\n\n{answer}"
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
@@ -260,11 +227,9 @@ async def chat_endpoint(request: Request):
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
-            # Add a dynamic opening
             opening = get_dynamic_opening(question)
             final_answer = f"{opening} {refined_response}"
 
-            # Calculate response time
             response_time = time.time() - start_time
 
             return {
@@ -274,7 +239,6 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{response_time:.2f} seconds",
             }
 
-        # Step 4: Handle cases where no valid answer is found in database or fallback KB
         response_time = time.time() - start_time
         return {
             "answer": "I'm sorry, I couldn't find relevant information. Feel free to ask about EPR or related topics!",
@@ -293,10 +257,8 @@ async def chat_endpoint(request: Request):
             "response_time": f"{response_time:.2f} seconds",
         }
 
-
 @app.post("/add")
 async def add_to_validated_qa(request: Request):
-    """Add a new question-answer pair to the database."""
     try:
         data = await request.json()
         question = data.get("question", "").strip()
@@ -321,7 +283,6 @@ async def add_to_validated_qa(request: Request):
 
 @app.get("/list-sections")
 def list_sections():
-    """List all sections available in the database."""
     try:
         conn = connect_db()
         cursor = conn.cursor()
@@ -336,7 +297,6 @@ def list_sections():
 
 @app.post("/test-llama")
 async def test_llama(prompt: str):
-    """Test the LLaMA 2 model with a given prompt."""
     try:
         inputs = llama_tokenizer(prompt, return_tensors="pt").to(device)
         outputs = llama_model.generate(
