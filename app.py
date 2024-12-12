@@ -18,10 +18,10 @@ from functools import lru_cache
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("app_debug.log"),  # Log to a file
+        logging.FileHandler("app_log.log"),  # Log to a file
         logging.StreamHandler()  # Log to the console
     ]
 )
@@ -81,7 +81,6 @@ async def read_root():
     """Serve the index.html file."""
     index_file = os.path.join(TEMPLATES_DIR, "index.html")
     if os.path.exists(index_file):
-        logger.debug("Serving index.html")
         return FileResponse(index_file)
     logger.error("index.html not found")
     raise HTTPException(status_code=404, detail="Frontend index.html not found")
@@ -134,7 +133,6 @@ warnings.filterwarnings("ignore", category=UserWarning, message="cache-system us
 def connect_db():
     """Connect to the SQLite database."""
     try:
-        logger.debug("Connecting to the database.")
         return sqlite3.connect(DB_PATH)
     except sqlite3.Error as e:
         logger.error(f"Database connection error: {e}")
@@ -143,11 +141,8 @@ def connect_db():
 def compute_embedding(text: str):
     """Compute embedding for a given text using Sentence-BERT."""
     try:
-        logger.debug(f"Computing embedding for text: {text}")
         model = load_sentence_bert()
-        embedding = model.encode(text).reshape(1, -1)
-        logger.debug("Embedding computed successfully.")
-        return embedding
+        return model.encode(text).reshape(1, -1)
     except Exception as e:
         logger.exception("Error computing embedding")
         raise
@@ -158,6 +153,7 @@ def query_validated_qa(user_embedding):
         conn = connect_db()
         cursor = conn.cursor()
         cursor.execute("SELECT question, answer, embedding FROM ValidatedQA")
+
         max_similarity = 0.0
         best_answer = None
 
@@ -166,11 +162,9 @@ def query_validated_qa(user_embedding):
             if row is None:
                 break
 
-            db_question, db_answer, db_embedding = row
+            _, db_answer, db_embedding = row
             db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
             similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
-
-            logger.debug(f"Processed row with similarity {similarity} for question: {db_question}")
 
             if similarity > max_similarity:
                 max_similarity = similarity
@@ -179,10 +173,8 @@ def query_validated_qa(user_embedding):
         conn.close()
 
         if max_similarity >= 0.7:  # Similarity threshold
-            logger.info(f"Best match found: {best_answer} with similarity {max_similarity}")
-            return best_answer, max_similarity
+            return best_answer, float(max_similarity)
 
-        logger.info("No suitable match found.")
         return None, 0.0
     except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
@@ -191,78 +183,35 @@ def query_validated_qa(user_embedding):
 def fuzzy_match_fallback(question: str) -> str:
     """Use fuzzy matching to find the closest fallback response."""
     try:
-        logger.debug(f"Fuzzy matching for question: {question}")
         match, score = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
         if score >= 80:  # Set threshold for acceptable match
-            logger.info(f"Fuzzy match found: {match} with score {score}")
             return FALLBACK_KB[match]
-        logger.warning(f"No close match found for question: '{question}'")
         return None
     except Exception as e:
         logger.exception("Error during fuzzy matching")
         return None
 
-def search_sections(query: str):
-    """Search for terms in the sections table."""
-    try:
-        logger.debug(f"Searching sections for query: {query}")
-        conn = connect_db()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, content FROM Sections WHERE content LIKE ? LIMIT 10;",
-            (f"%{query}%",),
-        )
-        results = cursor.fetchall()
-        conn.close()
-        logger.info(f"Found {len(results)} matching sections.")
-        return [{"id": row[0], "content": row[1]} for row in results]
-    except sqlite3.Error as e:
-        logger.error(f"Database error: {e}")
-        return []
-
-def get_dynamic_opening(query: str) -> str:
-    """Determine a dynamic opening based on the query type."""
-    try:
-        logger.debug(f"Determining dynamic opening for query: {query}")
-        query = query.lower()
-        if any(keyword in query for keyword in ["when", "date", "time", "timeline"]):
-            opening = random.choice(OPENINGS["time"])
-        elif any(keyword in query for keyword in ["who", "what", "fact"]):
-            opening = random.choice(OPENINGS["fact"])
-        else:
-            opening = random.choice(OPENINGS["default"])
-        logger.info(f"Dynamic opening selected: {opening}")
-        return opening
-    except Exception as e:
-        logger.exception("Error determining dynamic opening")
-        return ""
-
-# Chat Endpoint with Fallback Behavior
+# Chat Endpoint
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
-        # Start timing
         start_time = time.time()
 
         # Parse the user query
         data = await request.json()
         question = data.get("message", "").strip().lower()
-        logger.info(f"Received question: {question}")
 
         if not question:
-            logger.warning("Received empty message")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
         # Handle predefined fallback queries with fuzzy matching
         fallback_response = fuzzy_match_fallback(question)
         if fallback_response:
-            response_time = time.time() - start_time
-            logger.info(f"Fallback response: {fallback_response}")
             return {
                 "answer": fallback_response,
                 "confidence": 1.0,
                 "source": "fuzzy fallback knowledge base",
-                "response_time": f"{response_time:.2f} seconds",
+                "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
         # Step 1: Compute embedding for the question
@@ -270,14 +219,11 @@ async def chat_endpoint(request: Request):
 
         # Step 2: Query the database for a relevant answer
         answer, confidence = query_validated_qa(user_embedding)
-
-        # Ensure confidence is converted to a native float
         confidence = float(confidence)
 
         # Step 3: Use LLaMA to refine the response if a valid database match is found
         if answer and confidence >= 0.8:
             prompt = f"Rephrase this information in a friendly and conversational tone:\n\n{answer}"
-            logger.debug(f"Using LLaMA with prompt: {prompt}")
 
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
@@ -289,37 +235,26 @@ async def chat_endpoint(request: Request):
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
-            # Post-process to clean up the output
-            final_answer = refined_response.split("\n\n")[-1].strip()
-
-            # Calculate response time
-            response_time = time.time() - start_time
-
-            logger.info(f"Final response: {final_answer}, confidence: {confidence}")
             return {
-                "answer": final_answer,
+                "answer": refined_response,
                 "confidence": confidence,
                 "source": "database + llama",
-                "response_time": f"{response_time:.2f} seconds",
+                "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 4: Handle cases where no valid answer is found in database or fallback KB
-        response_time = time.time() - start_time
-        logger.info("No valid answer found. Returning fallback response.")
+        # Handle cases where no valid answer is found in database or fallback KB
         return {
             "answer": "I'm sorry, I couldn't find relevant information. Feel free to ask about EPR or related topics!",
             "confidence": 0.0,
             "source": "fallback response",
-            "response_time": f"{response_time:.2f} seconds",
+            "response_time": f"{time.time() - start_time:.2f} seconds",
         }
 
     except Exception as e:
         logger.exception("Error in /chat endpoint")
-        response_time = time.time() - start_time
         return {
             "answer": "An internal error occurred. Please try again later.",
             "confidence": 0.0,
             "source": "error",
-            "response_time": f"{response_time:.2f} seconds",
+            "response_time": f"{time.time() - start_time:.2f} seconds",
         }
-
