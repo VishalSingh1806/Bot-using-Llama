@@ -9,6 +9,7 @@ import sqlite3
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
+from fuzzywuzzy import fuzz, process
 import logging
 import os
 import random
@@ -159,6 +160,14 @@ def query_validated_qa(user_embedding):
         logging.error(f"Database query error: {e}")
         return None, 0.0
 
+def fuzzy_match_fallback(question: str) -> str:
+    """Use fuzzy matching to find the closest fallback response."""
+    match, score = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
+    if score >= 80:  # Set threshold for acceptable match
+        return FALLBACK_KB[match]
+    logging.warning(f"No close match found for question: '{question}' (Best match: '{match}' with score {score})")
+    return None
+
 def search_sections(query: str):
     """Search for terms in the sections table."""
     try:
@@ -200,13 +209,14 @@ async def chat_endpoint(request: Request):
         if not question:
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Handle predefined fallback queries
-        if question in FALLBACK_KB:
+        # Handle predefined fallback queries with fuzzy matching
+        fallback_response = fuzzy_match_fallback(question)
+        if fallback_response:
             response_time = time.time() - start_time
             return {
-                "answer": FALLBACK_KB[question],
+                "answer": fallback_response,
                 "confidence": 1.0,
-                "source": "fallback knowledge base",
+                "source": "fuzzy fallback knowledge base",
                 "response_time": f"{response_time:.2f} seconds",
             }
 
