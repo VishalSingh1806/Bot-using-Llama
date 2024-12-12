@@ -55,14 +55,15 @@ FALLBACK_KB = {
 
 # EPR Keywords for Validation
 EPR_KEYWORDS = [
-    "EPR",
-    "Extended Producer Responsibility",
+    "epr",
+    "extended producer responsibility",
     "plastic waste management",
     "recycling",
     "environment",
     "producer responsibility",
     "waste",
     "management"
+    "sustainability"
 ]
 
 # Define lifespan event handlers
