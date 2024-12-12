@@ -280,7 +280,7 @@ async def chat_endpoint(request: Request):
     try:
         start_time = time.time()
 
-        # Parse the user query and session_id
+        # Parse request data
         data = await request.json()
         question = data.get("message", "").strip().lower()
         session_id = data.get("session_id", "default")
@@ -289,31 +289,26 @@ async def chat_endpoint(request: Request):
             logger.warning("Received empty message")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Step 1: Validate query relevance to EPR
-        if not is_query_relevant(question):
-            logger.info(f"Irrelevant query rejected: {question}")
-            return {
-                "answer": "I can only assist with questions related to Extended Producer Responsibility (EPR).",
-                "confidence": 0.0,
-                "source": "query validation",
-                "response_time": f"{time.time() - start_time:.2f} seconds",
-            }
+        # 1. **Query Classification**
+        is_relevant = is_query_relevant(question)
+        logger.info(f"Query relevance check: {is_relevant}")
 
-        # Step 2: Use memory context for better embeddings
+        # 2. **Dynamic Context Integration**
         memory_context = " ".join([f"User: {q} Bot: {r}" for q, r in session_memory[session_id]])
-        full_query = f"{memory_context} User: {question}" if memory_context else question
+        full_query = f"{memory_context} User: {question}" if memory_context and is_relevant else question
         logger.info(f"Dynamic prompt for query: {full_query}")
 
         # Compute embedding for the full query
         user_embedding = compute_embedding(full_query)
 
-        # Step 3: Query the database for a relevant answer
+        # 3. **Database Query Priority**
         answer, confidence = query_validated_qa(user_embedding)
+        logger.info(f"Database confidence: {confidence}")
 
-        if answer and confidence >= 0.8:
-            logger.info(f"Database response found for query: {question} with confidence {confidence}")
+        if answer and confidence >= 0.7:  # Relax confidence threshold
+            logger.info(f"Database response found for query: {question}")
             session_memory[session_id].append((question, answer))
-            if len(session_memory[session_id]) > 5:  # Limit memory size
+            if len(session_memory[session_id]) > 5:  # Limit memory
                 session_memory[session_id].pop(0)
             return {
                 "answer": answer,
@@ -322,23 +317,23 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 4: Handle fallback with improved matching
+        # 4. **Fallback Refinement**
         fallback_response = fuzzy_match_fallback(question)
         if fallback_response:
-            logger.info(f"Fallback response used for query: {question}")
+            logger.info(f"Fuzzy match fallback used for query: {question}")
             session_memory[session_id].append((question, fallback_response))
             if len(session_memory[session_id]) > 5:
                 session_memory[session_id].pop(0)
             return {
                 "answer": fallback_response,
-                "confidence": 1.0,
-                "source": "fuzzy fallback",
+                "confidence": 0.7,
+                "source": "fallback",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 5: Default response for no matches
-        logger.info(f"No valid response found for query: {question}")
-        default_response = "I'm sorry, I couldn't find relevant information."
+        # 5. **Default Response**
+        logger.info(f"No valid response for query: {question}")
+        default_response = "I couldn't find relevant information. Please ask about Extended Producer Responsibility (EPR)."
         session_memory[session_id].append((question, default_response))
         if len(session_memory[session_id]) > 5:
             session_memory[session_id].pop(0)
