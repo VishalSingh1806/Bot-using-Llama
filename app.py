@@ -20,6 +20,7 @@ from collections import defaultdict
 
 # In-memory storage for session-based memory
 session_memory = defaultdict(list)  # {session_id: [(query, response), ...]}
+conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
 
 # Configure logging
 logging.basicConfig(
@@ -269,8 +270,11 @@ async def chat_endpoint(request: Request):
             logger.warning("Received empty message")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Validate query relevance to EPR
-        if not is_query_relevant(question):
+        # Step 1: Check if the conversation is already EPR-related
+        is_context_epr_related = conversation_context[session_id]
+
+        # Step 2: Validate the query relevance to EPR (only for initial questions)
+        if not is_context_epr_related and not is_query_relevant(question):
             logger.info("Rejected irrelevant query: %s", question)
             return {
                 "answer": "I can only assist with questions related to Extended Producer Responsibility (EPR).",
@@ -279,14 +283,18 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Prepend memory to the question if it exists
+        # Step 3: Update context as EPR-related if the initial query is relevant
+        if not is_context_epr_related:
+            conversation_context[session_id] = True
+
+        # Step 4: Build a dynamic prompt using conversation history
         memory_context = " ".join([f"User: {q} Bot: {r}" for q, r in session_memory[session_id]])
         full_query = f"{memory_context} User: {question}" if memory_context else question
 
-        # Compute embedding for the full query
+        # Step 5: Compute embedding for the full query
         user_embedding = compute_embedding(full_query)
 
-        # Query the database for a relevant answer
+        # Step 6: Query the database for a relevant answer
         answer, confidence = query_validated_qa(user_embedding)
         confidence = float(confidence)
 
@@ -302,6 +310,7 @@ async def chat_endpoint(request: Request):
                 temperature=0.7
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+
             final_answer = refined_response.split("\n\n")[-1].strip()
 
             # Update memory with the latest interaction
@@ -316,7 +325,7 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Handle fallback
+        # Step 7: Handle fallback responses
         fallback_response = fuzzy_match_fallback(question)
         if fallback_response:
             session_memory[session_id].append((question, fallback_response))
@@ -329,7 +338,7 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Default response if nothing matches
+        # Step 8: Default response for no matches
         fallback_answer = "I'm sorry, I couldn't find relevant information."
         session_memory[session_id].append((question, fallback_answer))
         if len(session_memory[session_id]) > 5:
@@ -340,6 +349,7 @@ async def chat_endpoint(request: Request):
             "source": "fallback response",
             "response_time": f"{time.time() - start_time:.2f} seconds",
         }
+
     except HTTPException as e:
         raise e  # Let custom handler handle HTTP errors
     except Exception as e:
