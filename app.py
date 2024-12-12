@@ -9,7 +9,7 @@ import sqlite3
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
-from fuzzywuzzy import fuzz, process
+from rapidfuzz import fuzz, process
 import logging
 import os
 import random
@@ -181,7 +181,7 @@ def query_validated_qa(user_embedding):
         return None, 0.0
 
 def fuzzy_match_fallback(question: str) -> str:
-    """Use fuzzy matching to find the closest fallback response."""
+    """Use rapidfuzz to find the closest fallback response."""
     try:
         match, score = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
         if score >= 80:  # Set threshold for acceptable match
