@@ -99,6 +99,10 @@ EPR_KEYWORDS = [
     "recovery obligations",
     "compliance reporting",
     "sustainable development"
+    "manufacture"
+    "import"
+    "importer"
+    "producer"
 ]
 
 # Define lifespan event handlers
