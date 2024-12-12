@@ -289,7 +289,7 @@ async def chat_endpoint(request: Request):
 
         # Step 2: Validate the query relevance to EPR (only for initial questions)
         if not is_context_epr_related and not is_query_relevant(question):
-            logger.info("Rejected irrelevant query: %s", question)
+            logger.info(f"Rejected irrelevant query: {question}")
             return {
                 "answer": "I can only assist with questions related to Extended Producer Responsibility (EPR).",
                 "confidence": 0.0,
@@ -306,7 +306,6 @@ async def chat_endpoint(request: Request):
         full_query = f"{memory_context} User: {question}" if memory_context else question
         logger.info(f"Dynamic prompt for query: {full_query}")
 
-
         # Step 5: Compute embedding for the full query
         user_embedding = compute_embedding(full_query)
 
@@ -314,21 +313,6 @@ async def chat_endpoint(request: Request):
         answer, confidence = query_validated_qa(user_embedding)
         confidence = float(confidence)
 
-        # Step 7: Handle fallback responses
-        # Fallback response prioritization
-        fallback_response = fuzzy_match_fallback(question)
-        if fallback_response:
-            session_memory[session_id].append((question, fallback_response))
-            if len(session_memory[session_id]) > 5:
-                session_memory[session_id].pop(0)
-            return {
-                "answer": fallback_response,
-                "confidence": 1.0,
-                "source": "fuzzy fallback knowledge base",
-                "response_time": f"{time.time() - start_time:.2f} seconds",
-            }
-
-        
         if answer and confidence >= 0.8:
             # Use LLaMA to refine the response
             prompt = f"Rephrase this information in a professional and clear tone:\n\n{answer}"
@@ -341,14 +325,14 @@ async def chat_endpoint(request: Request):
                 temperature=0.7
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-        
+
             final_answer = refined_response.split("\n\n")[-1].strip()
-        
+
             # Update memory with the latest interaction
             session_memory[session_id].append((question, final_answer))
             if len(session_memory[session_id]) > 5:  # Limit memory size
                 session_memory[session_id].pop(0)
-        
+
             return {
                 "answer": final_answer,
                 "confidence": confidence,
@@ -356,9 +340,10 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 7: Handle fallback responses
+        # Step 7: Handle fallback responses if no database match is found
         fallback_response = fuzzy_match_fallback(question)
         if fallback_response:
+            logger.info(f"Using fallback response for query: {question}")
             session_memory[session_id].append((question, fallback_response))
             if len(session_memory[session_id]) > 5:
                 session_memory[session_id].pop(0)
@@ -371,6 +356,7 @@ async def chat_endpoint(request: Request):
 
         # Step 8: Default response for no matches
         fallback_answer = "I'm sorry, I couldn't find relevant information."
+        logger.info(f"No valid response found for query: {question}")
         session_memory[session_id].append((question, fallback_answer))
         if len(session_memory[session_id]) > 5:
             session_memory[session_id].pop(0)
