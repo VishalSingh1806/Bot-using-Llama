@@ -9,10 +9,12 @@ import sqlite3
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
+from rapidfuzz import fuzz, process
 import logging
 import os
 import random
 import time
+from functools import lru_cache
 
 # Predefined openings
 OPENINGS = {
@@ -33,12 +35,12 @@ OPENINGS = {
     ],
 }
 
-
 # Fallback Knowledge Base for General Queries
 FALLBACK_KB = {
     "what can you do": "I can answer questions about EPR and assist with understanding concepts like plastic waste management, rules, and responsibilities. Try asking something specific!",
     "who made you": "I was developed as a collaborative effort to assist with EPR and related topics using advanced AI capabilities!",
-    "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses."
+    "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses.",
+    "can you help me": "Of course! Ask me about EPR, plastic waste management, or any related topics, and I'll do my best to help.",
 }
 
 # Configure logging
@@ -66,7 +68,7 @@ app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
 # Hugging Face token
 hf_token = "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"
 
-# Serve `index.html` for root route
+# Serve index.html for root route
 @app.get("/")
 async def read_root():
     """Serve the index.html file."""
@@ -85,12 +87,17 @@ app.add_middleware(
 )
 
 # Load Sentence-BERT model
-try:
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    logging.info("Sentence-BERT model loaded successfully.")
-except Exception as e:
-    logging.error(f"Failed to load Sentence-BERT model: {e}")
-    raise RuntimeError(f"Failed to load Sentence-BERT model: {e}")
+@lru_cache(maxsize=1)  # Cache to prevent redundant loading
+def load_sentence_bert():
+    try:
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+        logging.info("Sentence-BERT model loaded successfully.")
+        return model
+    except Exception as e:
+        logging.error(f"Failed to load Sentence-BERT model: {e}")
+        raise RuntimeError(f"Failed to load Sentence-BERT model: {e}")
+
+model = load_sentence_bert()
 
 # Adjust LLaMA 2 model loading
 try:
@@ -140,20 +147,40 @@ def query_validated_qa(user_embedding):
         max_similarity = 0.0
         best_answer = None
 
-        for _, db_answer, db_embedding in rows:
-            db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
-            similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
-            if similarity > max_similarity:
-                max_similarity = similarity
-                best_answer = db_answer
+        for row in rows:
+            # Skip rows that don't have exactly 3 non-null elements
+            if len(row) != 3 or not all(row):
+                logging.warning(f"Skipping malformed or incomplete row: {row}")
+                continue
+
+            question, db_answer, db_embedding = row
+
+            # Safely process embeddings and compute similarity
+            try:
+                db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
+                similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
+                if similarity > max_similarity:
+                    max_similarity = similarity
+                    best_answer = db_answer
+            except ValueError as e:
+                logging.error(f"Error processing embedding for row: {row} - {e}")
+                continue
 
         conn.close()
         if max_similarity >= 0.7:  # Similarity threshold
-            return best_answer, float(max_similarity)
+            return best_answer, max_similarity
         return None, 0.0
     except sqlite3.Error as e:
         logging.error(f"Database query error: {e}")
         return None, 0.0
+
+def fuzzy_match_fallback(question: str) -> str:
+    """Use fuzzy matching to find the closest fallback response."""
+    match, score = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
+    if score >= 80:  # Set threshold for acceptable match
+        return FALLBACK_KB[match]
+    logging.warning(f"No close match found for question: '{question}' (Best match: '{match}' with score {score})")
+    return None
 
 def search_sections(query: str):
     """Search for terms in the sections table."""
@@ -182,7 +209,7 @@ def get_dynamic_opening(query: str) -> str:
     else:
         return random.choice(OPENINGS["default"])
 
-# Chat Endpoint with Fallback Behavior
+# Chat Endpoint with Enhanced Fallback and Fuzzy Logic
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
@@ -196,28 +223,32 @@ async def chat_endpoint(request: Request):
         if not question:
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Handle predefined fallback queries
-        if question in FALLBACK_KB:
+        # Debug log user question
+        logging.debug(f"User question: {question}")
+
+        # Handle predefined fallback queries with fuzzy logic
+        fallback_response = fuzzy_match_fallback(question)
+        if fallback_response:
             response_time = time.time() - start_time
+            opening = get_dynamic_opening(question)
             return {
-                "answer": FALLBACK_KB[question],
+                "answer": f"{opening} {fallback_response}",
                 "confidence": 1.0,
-                "source": "fallback knowledge base",
+                "source": "fuzzy fallback knowledge base",
                 "response_time": f"{response_time:.2f} seconds",
             }
 
         # Step 1: Compute embedding for the question
         user_embedding = compute_embedding(question)
+        logging.debug(f"Computed user embedding: {user_embedding}")
 
         # Step 2: Query the database for a relevant answer
         answer, confidence = query_validated_qa(user_embedding)
+        logging.debug(f"Query result - Answer: {answer}, Confidence: {confidence}")
 
         # Step 3: Use LLaMA to refine the response if a valid database match is found
         if answer and confidence >= 0.8:
-            # Construct the rephrasing prompt
             prompt = f"Rephrase this information in a friendly and conversational tone:\n\n{answer}"
-
-            # Tokenize and process with LLaMA
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
                 **inputs,
@@ -228,13 +259,13 @@ async def chat_endpoint(request: Request):
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
-            # Post-process to clean up the output
-            final_answer = refined_response.split("\n\n")[-1].strip()
+            # Add a dynamic opening
+            opening = get_dynamic_opening(question)
+            final_answer = f"{opening} {refined_response}"
 
             # Calculate response time
             response_time = time.time() - start_time
 
-            # Return the refined response with response time
             return {
                 "answer": final_answer,
                 "confidence": confidence,
