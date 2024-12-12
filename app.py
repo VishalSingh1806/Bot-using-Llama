@@ -289,50 +289,70 @@ async def chat_endpoint(request: Request):
             logger.warning("Received empty message")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # 1. **Query Classification**
-        is_relevant = is_query_relevant(question)
-        logger.info(f"Query relevance check: {is_relevant}")
+        # Step 1: Validate query relevance to EPR
+        if not is_query_relevant(question):
+            logger.info(f"Irrelevant query rejected: {question}")
+            return {
+                "answer": "I can only assist with questions related to Extended Producer Responsibility (EPR).",
+                "confidence": 0.0,
+                "source": "query validation",
+                "response_time": f"{time.time() - start_time:.2f} seconds",
+            }
 
-        # 2. **Dynamic Context Integration**
+        # Step 2: Use memory context for better embeddings
         memory_context = " ".join([f"User: {q} Bot: {r}" for q, r in session_memory[session_id]])
-        full_query = f"{memory_context} User: {question}" if memory_context and is_relevant else question
+        full_query = f"{memory_context} User: {question}" if memory_context else question
         logger.info(f"Dynamic prompt for query: {full_query}")
 
         # Compute embedding for the full query
         user_embedding = compute_embedding(full_query)
 
-        # 3. **Database Query Priority**
-        answer, confidence = query_validated_qa(user_embedding)
-        logger.info(f"Database confidence: {confidence}")
+        # Step 3: Query the database for a relevant answer
+        db_answer, confidence = query_validated_qa(user_embedding)
 
-        if answer and confidence >= 0.7:  # Relax confidence threshold
-            logger.info(f"Database response found for query: {question}")
-            session_memory[session_id].append((question, answer))
-            if len(session_memory[session_id]) > 5:  # Limit memory
+        if db_answer and confidence >= 0.7:
+            logger.info(f"Database response found for query: {question} with confidence {confidence}")
+
+            # Refine the database answer using LLaMA
+            prompt = f"Rephrase this information to directly answer the question:\n\nQuestion: {question}\n\nAnswer: {db_answer}"
+            inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
+            outputs = llama_model.generate(
+                **inputs,
+                max_new_tokens=140,
+                do_sample=True,
+                top_k=50,
+                temperature=0.7
+            )
+            refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+            refined_answer = refined_response.split("\n\n")[-1].strip()
+
+            session_memory[session_id].append((question, refined_answer))
+            if len(session_memory[session_id]) > 5:  # Limit memory size
                 session_memory[session_id].pop(0)
+
             return {
-                "answer": answer,
+                "answer": refined_answer,
                 "confidence": confidence,
-                "source": "database",
+                "source": "database + llama refinement",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # 4. **Fallback Refinement**
+        # Step 4: Handle fallback with improved matching
         fallback_response = fuzzy_match_fallback(question)
         if fallback_response:
-            logger.info(f"Fuzzy match fallback used for query: {question}")
+            logger.info(f"Fallback response used for query: {question}")
             session_memory[session_id].append((question, fallback_response))
             if len(session_memory[session_id]) > 5:
                 session_memory[session_id].pop(0)
             return {
                 "answer": fallback_response,
-                "confidence": 0.7,
-                "source": "fallback",
+                "confidence": 1.0,
+                "source": "fuzzy fallback",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # 5. **Default Response**
-        logger.info(f"No valid response for query: {question}")
+        # Step 5: Default response for no matches
+        logger.info(f"No valid response found for query: {question}")
         default_response = "I couldn't find relevant information. Please ask about Extended Producer Responsibility (EPR)."
         session_memory[session_id].append((question, default_response))
         if len(session_memory[session_id]) > 5:
