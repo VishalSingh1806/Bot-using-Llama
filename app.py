@@ -22,6 +22,10 @@ from collections import defaultdict
 session_memory = defaultdict(list)  # {session_id: [(query, response), ...]}
 conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
 
+# In-memory storage for dynamic keyword learning
+DYNAMIC_KEYWORDS = set(EPR_KEYWORDS)  # Start with existing keywords
+keyword_frequency = defaultdict(int)  # Track keyword usage frequency
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -201,9 +205,50 @@ def compute_embedding(text: str):
         raise
 
 def is_query_relevant(query: str) -> bool:
-    """Check if the query is relevant to Extended Producer Responsibility."""
+    """Check if the query is relevant and learn new keywords."""
     query = query.lower()
-    return any(keyword in query for keyword in EPR_KEYWORDS)
+    words = query.split()
+
+    # Check if any existing keyword is in the query
+    if any(word in DYNAMIC_KEYWORDS for word in words):
+        return True
+
+    # If no keywords match, learn from the query
+    learn_keywords_from_query(query)
+    return False
+
+def learn_keywords_from_query(query: str):
+    """Extract and save new keywords from user queries."""
+    global DYNAMIC_KEYWORDS
+
+    # Split the query into words and filter based on length or stopwords
+    new_keywords = [word for word in query.split() if len(word) > 3]
+
+    # Update dynamic keyword storage
+    for keyword in new_keywords:
+        if keyword not in DYNAMIC_KEYWORDS:
+            DYNAMIC_KEYWORDS.add(keyword)
+            keyword_frequency[keyword] += 1  # Track frequency
+
+    # Optionally log new keywords for analysis
+    logger.info(f"Learned new keywords: {new_keywords}")
+
+def save_keywords_to_file():
+    """Save dynamic keywords to a file."""
+    with open("dynamic_keywords.json", "w") as f:
+        json.dump({"keywords": list(DYNAMIC_KEYWORDS), "frequency": keyword_frequency}, f)
+
+def load_keywords_from_file():
+    """Load dynamic keywords from a file."""
+    global DYNAMIC_KEYWORDS, keyword_frequency
+    try:
+        with open("dynamic_keywords.json", "r") as f:
+            data = json.load(f)
+            DYNAMIC_KEYWORDS.update(data.get("keywords", []))
+            keyword_frequency.update(data.get("frequency", {}))
+    except FileNotFoundError:
+        logger.warning("Keyword file not found. Starting fresh.")
+
 
 def query_validated_qa(user_embedding):
     """Query the ValidatedQA table for the best match."""
@@ -289,9 +334,9 @@ async def chat_endpoint(request: Request):
             logger.warning("Received empty message")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Step 1: Validate query relevance to EPR
+        # Check query relevance
         if not is_query_relevant(question):
-            logger.info(f"Irrelevant query rejected: {question}")
+            logger.info(f"Irrelevant query logged: {question}")
             return {
                 "answer": "I can only assist with questions related to Extended Producer Responsibility (EPR).",
                 "confidence": 0.0,
