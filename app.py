@@ -236,13 +236,22 @@ def query_validated_qa(user_embedding):
 def fuzzy_match_fallback(question: str) -> str:
     """Use rapidfuzz to find the closest fallback response."""
     try:
-        match, score = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
-        if score >= 80:  # Set threshold for acceptable match
-            return FALLBACK_KB[match]
+        # Extract the closest match using RapidFuzz
+        result = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
+        if result:
+            match, score = result[0], result[1]
+            if score >= 80:  # Set threshold for acceptable match
+                logger.info(f"Fuzzy match found: {match} with score {score}")
+                return FALLBACK_KB[match]
+            else:
+                logger.warning(f"Low confidence match: {match} with score {score}")
+        else:
+            logger.info("No suitable fuzzy match found")
         return None
     except Exception as e:
         logger.exception("Error during fuzzy matching")
         return None
+
 
 # Custom Exception Handlers
 @app.exception_handler(HTTPException)
@@ -298,6 +307,20 @@ async def chat_endpoint(request: Request):
         answer, confidence = query_validated_qa(user_embedding)
         confidence = float(confidence)
 
+        # Step 7: Handle fallback responses
+        fallback_response = fuzzy_match_fallback(question)
+        if fallback_response:
+            session_memory[session_id].append((question, fallback_response))
+            if len(session_memory[session_id]) > 5:
+                session_memory[session_id].pop(0)
+            return {
+                "answer": fallback_response,
+                "confidence": 1.0,
+                "source": "fuzzy fallback knowledge base",
+                "response_time": f"{time.time() - start_time:.2f} seconds",
+            }
+
+        
         if answer and confidence >= 0.8:
             # Use LLaMA to refine the response
             prompt = f"Rephrase this information in a professional and clear tone:\n\n{answer}"
