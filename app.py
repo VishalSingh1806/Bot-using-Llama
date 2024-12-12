@@ -103,6 +103,7 @@ EPR_KEYWORDS = [
     "import"
     "importer"
     "producer"
+    "plastic"
 ]
 
 # Define lifespan event handlers
