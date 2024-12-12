@@ -271,6 +271,9 @@ async def chat_endpoint(request: Request):
         # Step 2: Query the database for a relevant answer
         answer, confidence = query_validated_qa(user_embedding)
 
+        # Ensure confidence is converted to a native float
+        confidence = float(confidence)
+
         # Step 3: Use LLaMA to refine the response if a valid database match is found
         if answer and confidence >= 0.8:
             prompt = f"Rephrase this information in a friendly and conversational tone:\n\n{answer}"
@@ -319,3 +322,4 @@ async def chat_endpoint(request: Request):
             "source": "error",
             "response_time": f"{response_time:.2f} seconds",
         }
+
