@@ -146,7 +146,7 @@ def compute_embedding(text: str):
         logger.debug(f"Computing embedding for text: {text}")
         model = load_sentence_bert()
         embedding = model.encode(text).reshape(1, -1)
-        logger.debug(f"Embedding computed successfully: {embedding}")
+        logger.debug("Embedding computed successfully.")
         return embedding
     except Exception as e:
         logger.exception("Error computing embedding")
@@ -158,23 +158,31 @@ def query_validated_qa(user_embedding):
         conn = connect_db()
         cursor = conn.cursor()
         cursor.execute("SELECT question, answer, embedding FROM ValidatedQA")
-        rows = cursor.fetchall()
-
         max_similarity = 0.0
         best_answer = None
 
-        for _, db_answer, db_embedding in rows:
+        while True:
+            row = cursor.fetchone()
+            if row is None:
+                break
+
+            db_question, db_answer, db_embedding = row
             db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
             similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
-            logger.debug(f"Computed similarity: {similarity} for answer: {db_answer}")
+
+            logger.debug(f"Processed row with similarity {similarity} for question: {db_question}")
+
             if similarity > max_similarity:
                 max_similarity = similarity
                 best_answer = db_answer
 
         conn.close()
-        logger.info(f"Best match found: {best_answer} with similarity {max_similarity}")
+
         if max_similarity >= 0.7:  # Similarity threshold
-            return best_answer, float(max_similarity)
+            logger.info(f"Best match found: {best_answer} with similarity {max_similarity}")
+            return best_answer, max_similarity
+
+        logger.info("No suitable match found.")
         return None, 0.0
     except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
@@ -188,7 +196,7 @@ def fuzzy_match_fallback(question: str) -> str:
         if score >= 80:  # Set threshold for acceptable match
             logger.info(f"Fuzzy match found: {match} with score {score}")
             return FALLBACK_KB[match]
-        logger.warning(f"No close match found for question: '{question}' (Best match: '{match}' with score {score})")
+        logger.warning(f"No close match found for question: '{question}'")
         return None
     except Exception as e:
         logger.exception("Error during fuzzy matching")
