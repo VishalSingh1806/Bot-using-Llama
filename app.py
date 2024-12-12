@@ -48,10 +48,22 @@ OPENINGS = {
 
 # Fallback Knowledge Base for General Queries
 FALLBACK_KB = {
-    "what can you do": "I can answer questions about EPR and assist with understanding concepts like plastic waste management, rules, and responsibilities. Try asking something specific!",
-    "who made you": "I was developed as a collaborative effort to assist with EPR and related topics using advanced AI capabilities!",
-    "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses."
+    "what can you do": "I can answer questions about Extended Producer Responsibility (EPR) and assist with understanding concepts like plastic waste management, rules, and responsibilities. Try asking something specific!",
+    "who made you": "I was developed as a collaborative effort to assist with Extended Producer Responsibility (EPR) and related topics using advanced AI capabilities!",
+    "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses related to Extended Producer Responsibility."
 }
+
+# EPR Keywords for Validation
+EPR_KEYWORDS = [
+    "EPR",
+    "Extended Producer Responsibility",
+    "plastic waste management",
+    "recycling",
+    "environment",
+    "producer responsibility",
+    "waste",
+    "management"
+]
 
 # Define lifespan event handlers
 async def lifespan(app: FastAPI):
@@ -147,6 +159,11 @@ def compute_embedding(text: str):
         logger.exception("Error computing embedding")
         raise
 
+def is_query_relevant(query: str) -> bool:
+    """Check if the query is relevant to Extended Producer Responsibility."""
+    query = query.lower()
+    return any(keyword in query for keyword in EPR_KEYWORDS)
+
 def query_validated_qa(user_embedding):
     """Query the ValidatedQA table for the best match."""
     try:
@@ -220,13 +237,13 @@ async def chat_endpoint(request: Request):
             logger.warning("Received empty message")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Handle predefined fallback queries with fuzzy matching
-        fallback_response = fuzzy_match_fallback(question)
-        if fallback_response:
+        # Validate query relevance to EPR
+        if not is_query_relevant(question):
+            logger.info("Rejected irrelevant query: %s", question)
             return {
-                "answer": fallback_response,
-                "confidence": 1.0,
-                "source": "fuzzy fallback knowledge base",
+                "answer": "I can only assist with questions related to Extended Producer Responsibility (EPR). Please ask about EPR topics such as plastic waste management, recycling, or producer responsibility.",
+                "confidence": 0.0,
+                "source": "query validation",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
@@ -239,7 +256,9 @@ async def chat_endpoint(request: Request):
 
         # Step 3: Use LLaMA to refine the response if a valid database match is found
         if answer and confidence >= 0.8:
-            prompt = f"Rephrase this information in a professional and clear tone:\n\n{answer}"
+            prompt = f"Rephrase this information in a professional and clear tone:
+
+{answer}"
 
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
@@ -251,7 +270,6 @@ async def chat_endpoint(request: Request):
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
-            # Ensure output is concise and excludes excessive intros
             final_answer = refined_response.split("\n\n")[-1].strip()
 
             return {
@@ -261,9 +279,18 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Handle cases where no valid answer is found in database or fallback KB
+        # Step 4: Handle cases where no valid answer is found in database or fallback KB
+        fallback_response = fuzzy_match_fallback(question)
+        if fallback_response:
+            return {
+                "answer": fallback_response,
+                "confidence": 1.0,
+                "source": "fuzzy fallback knowledge base",
+                "response_time": f"{time.time() - start_time:.2f} seconds",
+            }
+
         return {
-            "answer": "I'm sorry, I couldn't find relevant information. Feel free to ask about EPR or related topics!",
+            "answer": "I'm sorry, I couldn't find relevant information. Feel free to ask about Extended Producer Responsibility (EPR) or related topics!",
             "confidence": 0.0,
             "source": "fallback response",
             "response_time": f"{time.time() - start_time:.2f} seconds",
