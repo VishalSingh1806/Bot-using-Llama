@@ -15,6 +15,11 @@ import os
 import random
 import time
 from functools import lru_cache
+from collections import defaultdict
+
+
+# In-memory storage for session-based memory
+session_memory = defaultdict(list)  # {session_id: [(query, response), ...]}
 
 # Configure logging
 logging.basicConfig(
@@ -255,13 +260,10 @@ async def chat_endpoint(request: Request):
     try:
         start_time = time.time()
 
-        # Parse the user query
-        try:
-            data = await request.json()
-            question = data.get("message", "").strip().lower()
-        except ValueError:
-            logger.warning("Malformed JSON data received")
-            raise HTTPException(status_code=400, detail="Invalid JSON data.")
+        # Parse the user query and session_id
+        data = await request.json()
+        question = data.get("message", "").strip().lower()
+        session_id = data.get("session_id", "default")
 
         if not question:
             logger.warning("Received empty message")
@@ -271,23 +273,26 @@ async def chat_endpoint(request: Request):
         if not is_query_relevant(question):
             logger.info("Rejected irrelevant query: %s", question)
             return {
-                "answer": "I can only assist with questions related to Extended Producer Responsibility (EPR). Please ask about EPR topics such as plastic waste management, recycling, or producer responsibility.",
+                "answer": "I can only assist with questions related to Extended Producer Responsibility (EPR).",
                 "confidence": 0.0,
                 "source": "query validation",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 1: Compute embedding for the question
-        user_embedding = compute_embedding(question)
+        # Prepend memory to the question if it exists
+        memory_context = " ".join([f"User: {q} Bot: {r}" for q, r in session_memory[session_id]])
+        full_query = f"{memory_context} User: {question}" if memory_context else question
 
-        # Step 2: Query the database for a relevant answer
+        # Compute embedding for the full query
+        user_embedding = compute_embedding(full_query)
+
+        # Query the database for a relevant answer
         answer, confidence = query_validated_qa(user_embedding)
         confidence = float(confidence)
 
-        # Step 3: Use LLaMA to refine the response if a valid database match is found
         if answer and confidence >= 0.8:
+            # Use LLaMA to refine the response
             prompt = f"Rephrase this information in a professional and clear tone:\n\n{answer}"
-
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
                 **inputs,
@@ -297,8 +302,12 @@ async def chat_endpoint(request: Request):
                 temperature=0.7
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-
             final_answer = refined_response.split("\n\n")[-1].strip()
+
+            # Update memory with the latest interaction
+            session_memory[session_id].append((question, final_answer))
+            if len(session_memory[session_id]) > 5:  # Limit memory size
+                session_memory[session_id].pop(0)
 
             return {
                 "answer": final_answer,
@@ -307,9 +316,12 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 4: Handle cases where no valid answer is found in database or fallback KB
+        # Handle fallback
         fallback_response = fuzzy_match_fallback(question)
         if fallback_response:
+            session_memory[session_id].append((question, fallback_response))
+            if len(session_memory[session_id]) > 5:
+                session_memory[session_id].pop(0)
             return {
                 "answer": fallback_response,
                 "confidence": 1.0,
@@ -317,14 +329,19 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
+        # Default response if nothing matches
+        fallback_answer = "I'm sorry, I couldn't find relevant information."
+        session_memory[session_id].append((question, fallback_answer))
+        if len(session_memory[session_id]) > 5:
+            session_memory[session_id].pop(0)
         return {
-            "answer": "I'm sorry, I couldn't find relevant information. Feel free to ask about Extended Producer Responsibility (EPR) or related topics!",
+            "answer": fallback_answer,
             "confidence": 0.0,
             "source": "fallback response",
             "response_time": f"{time.time() - start_time:.2f} seconds",
         }
     except HTTPException as e:
-        raise e  # Let the custom HTTP exception handler handle it
+        raise e  # Let custom handler handle HTTP errors
     except Exception as e:
         logger.exception("Error in /chat endpoint")
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
