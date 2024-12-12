@@ -9,7 +9,6 @@ import sqlite3
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
-from rapidfuzz import fuzz, process
 import logging
 import os
 import random
@@ -39,8 +38,7 @@ OPENINGS = {
 FALLBACK_KB = {
     "what can you do": "I can answer questions about EPR and assist with understanding concepts like plastic waste management, rules, and responsibilities. Try asking something specific!",
     "who made you": "I was developed as a collaborative effort to assist with EPR and related topics using advanced AI capabilities!",
-    "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses.",
-    "can you help me": "Of course! Ask me about EPR, plastic waste management, or any related topics, and I'll do my best to help.",
+    "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses."
 }
 
 # Configure logging
@@ -68,7 +66,7 @@ app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
 # Hugging Face token
 hf_token = "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"
 
-# Serve index.html for root route
+# Serve `index.html` for root route
 @app.get("/")
 async def read_root():
     """Serve the index.html file."""
@@ -86,8 +84,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load Sentence-BERT model
-@lru_cache(maxsize=1)  # Cache to prevent redundant loading
+# Load Sentence-BERT model with caching
+@lru_cache(maxsize=1)
 def load_sentence_bert():
     try:
         model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -96,8 +94,6 @@ def load_sentence_bert():
     except Exception as e:
         logging.error(f"Failed to load Sentence-BERT model: {e}")
         raise RuntimeError(f"Failed to load Sentence-BERT model: {e}")
-
-model = load_sentence_bert()
 
 # Adjust LLaMA 2 model loading
 try:
@@ -134,6 +130,7 @@ def connect_db():
 
 def compute_embedding(text: str):
     """Compute embedding for a given text using Sentence-BERT."""
+    model = load_sentence_bert()
     return model.encode(text).reshape(1, -1)
 
 def query_validated_qa(user_embedding):
@@ -147,40 +144,20 @@ def query_validated_qa(user_embedding):
         max_similarity = 0.0
         best_answer = None
 
-        for row in rows:
-            # Skip rows that don't have exactly 3 non-null elements
-            if len(row) != 3 or not all(row):
-                logging.warning(f"Skipping malformed or incomplete row: {row}")
-                continue
-
-            question, db_answer, db_embedding = row
-
-            # Safely process embeddings and compute similarity
-            try:
-                db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
-                similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
-                if similarity > max_similarity:
-                    max_similarity = similarity
-                    best_answer = db_answer
-            except ValueError as e:
-                logging.error(f"Error processing embedding for row: {row} - {e}")
-                continue
+        for _, db_answer, db_embedding in rows:
+            db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
+            similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
+            if similarity > max_similarity:
+                max_similarity = similarity
+                best_answer = db_answer
 
         conn.close()
         if max_similarity >= 0.7:  # Similarity threshold
-            return best_answer, max_similarity
+            return best_answer, float(max_similarity)
         return None, 0.0
     except sqlite3.Error as e:
         logging.error(f"Database query error: {e}")
         return None, 0.0
-
-def fuzzy_match_fallback(question: str) -> str:
-    """Use fuzzy matching to find the closest fallback response."""
-    match, score = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
-    if score >= 80:  # Set threshold for acceptable match
-        return FALLBACK_KB[match]
-    logging.warning(f"No close match found for question: '{question}' (Best match: '{match}' with score {score})")
-    return None
 
 def search_sections(query: str):
     """Search for terms in the sections table."""
@@ -209,7 +186,7 @@ def get_dynamic_opening(query: str) -> str:
     else:
         return random.choice(OPENINGS["default"])
 
-# Chat Endpoint with Enhanced Fallback and Fuzzy Logic
+# Chat Endpoint with Fallback Behavior
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
@@ -223,32 +200,28 @@ async def chat_endpoint(request: Request):
         if not question:
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Debug log user question
-        logging.debug(f"User question: {question}")
-
-        # Handle predefined fallback queries with fuzzy logic
-        fallback_response = fuzzy_match_fallback(question)
-        if fallback_response:
+        # Handle predefined fallback queries
+        if question in FALLBACK_KB:
             response_time = time.time() - start_time
-            opening = get_dynamic_opening(question)
             return {
-                "answer": f"{opening} {fallback_response}",
+                "answer": FALLBACK_KB[question],
                 "confidence": 1.0,
-                "source": "fuzzy fallback knowledge base",
+                "source": "fallback knowledge base",
                 "response_time": f"{response_time:.2f} seconds",
             }
 
         # Step 1: Compute embedding for the question
         user_embedding = compute_embedding(question)
-        logging.debug(f"Computed user embedding: {user_embedding}")
 
         # Step 2: Query the database for a relevant answer
         answer, confidence = query_validated_qa(user_embedding)
-        logging.debug(f"Query result - Answer: {answer}, Confidence: {confidence}")
 
         # Step 3: Use LLaMA to refine the response if a valid database match is found
         if answer and confidence >= 0.8:
+            # Construct the rephrasing prompt
             prompt = f"Rephrase this information in a friendly and conversational tone:\n\n{answer}"
+
+            # Tokenize and process with LLaMA
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
                 **inputs,
@@ -259,13 +232,13 @@ async def chat_endpoint(request: Request):
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
-            # Add a dynamic opening
-            opening = get_dynamic_opening(question)
-            final_answer = f"{opening} {refined_response}"
+            # Post-process to clean up the output
+            final_answer = refined_response.split("\n\n")[-1].strip()
 
             # Calculate response time
             response_time = time.time() - start_time
 
+            # Return the refined response with response time
             return {
                 "answer": final_answer,
                 "confidence": confidence,
@@ -291,65 +264,3 @@ async def chat_endpoint(request: Request):
             "source": "error",
             "response_time": f"{response_time:.2f} seconds",
         }
-
-@app.post("/add")
-async def add_to_validated_qa(request: Request):
-    """Add a new question-answer pair to the database."""
-    try:
-        data = await request.json()
-        question = data.get("question", "").strip()
-        answer = data.get("answer", "").strip()
-
-        if not question or not answer:
-            raise HTTPException(status_code=400, detail="Both question and answer are required.")
-
-        embedding = compute_embedding(question).tobytes()
-        conn = connect_db()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO ValidatedQA (question, answer, embedding) VALUES (?, ?, ?)",
-            (question, answer, embedding),
-        )
-        conn.commit()
-        conn.close()
-        return {"message": "Question-Answer pair added successfully."}
-    except sqlite3.Error as e:
-        logging.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Database Error")
-
-@app.get("/list-sections")
-def list_sections():
-    """List all sections available in the database."""
-    try:
-        conn = connect_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, content FROM Sections LIMIT 10;")
-        sections = cursor.fetchall()
-        conn.close()
-
-        return {"sections": [{"id": sec[0], "content": sec[1]} for sec in sections]}
-    except sqlite3.Error as e:
-        logging.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Database Error")
-
-@app.post("/test-llama")
-async def test_llama(prompt: str):
-    """Test the LLaMA 2 model with a given prompt."""
-    try:
-        inputs = llama_tokenizer(prompt, return_tensors="pt").to(device)
-        outputs = llama_model.generate(
-            **inputs,
-            max_new_tokens=40,
-            do_sample=True,
-            top_k=20,
-            temperature=0.7
-        )
-        response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True)
-        return {"prompt": prompt, "response": response}
-    except Exception as e:
-        logging.error(f"Error in /test-llama endpoint: {e}")
-        return {"error": str(e)}
-
-@app.get("/favicon.ico", include_in_schema=False)
-async def favicon():
-    return FileResponse("static/favicon.ico")
