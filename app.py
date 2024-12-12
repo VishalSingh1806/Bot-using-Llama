@@ -172,7 +172,7 @@ def query_validated_qa(user_embedding):
 
         conn.close()
 
-        if max_similarity >= 0.7:  # Similarity threshold
+        if max_similarity >= 0.8:  # Similarity threshold
             return best_answer, float(max_similarity)
 
         return None, 0.0
