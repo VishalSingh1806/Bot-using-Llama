@@ -147,15 +147,15 @@ def query_validated_qa(user_embedding):
         best_answer = None
 
         for row in rows:
-            # Ensure row has exactly 3 valid elements
-            if len(row) != 3 or None in row:
-                logging.error(f"Malformed row in ValidatedQA: {row}")
+            # Skip rows that don't have exactly 3 non-null elements
+            if len(row) != 3 or not all(row):
+                logging.warning(f"Skipping malformed or incomplete row: {row}")
                 continue
 
             question, db_answer, db_embedding = row
 
+            # Safely process embeddings and compute similarity
             try:
-                # Convert binary embedding back to NumPy array
                 db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
                 similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
                 if similarity > max_similarity:
@@ -172,6 +172,7 @@ def query_validated_qa(user_embedding):
     except sqlite3.Error as e:
         logging.error(f"Database query error: {e}")
         return None, 0.0
+
 
 
 def fuzzy_match_fallback(question: str) -> str:
