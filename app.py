@@ -284,12 +284,9 @@ async def chat_endpoint(request: Request):
             logger.warning("Received empty message")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Step 1: Check if the conversation is already EPR-related
-        is_context_epr_related = conversation_context[session_id]
-
-        # Step 2: Validate the query relevance to EPR (only for initial questions)
-        if not is_context_epr_related and not is_query_relevant(question):
-            logger.info(f"Rejected irrelevant query: {question}")
+        # Step 1: Validate query relevance to EPR
+        if not is_query_relevant(question):
+            logger.info(f"Irrelevant query rejected: {question}")
             return {
                 "answer": "I can only assist with questions related to Extended Producer Responsibility (EPR).",
                 "confidence": 0.0,
@@ -297,78 +294,58 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 3: Update context as EPR-related if the initial query is relevant
-        if not is_context_epr_related:
-            conversation_context[session_id] = True
-
-        # Step 4: Build a dynamic prompt using conversation history
+        # Step 2: Use memory context for better embeddings
         memory_context = " ".join([f"User: {q} Bot: {r}" for q, r in session_memory[session_id]])
         full_query = f"{memory_context} User: {question}" if memory_context else question
         logger.info(f"Dynamic prompt for query: {full_query}")
 
-        # Step 5: Compute embedding for the full query
+        # Compute embedding for the full query
         user_embedding = compute_embedding(full_query)
 
-        # Step 6: Query the database for a relevant answer
+        # Step 3: Query the database for a relevant answer
         answer, confidence = query_validated_qa(user_embedding)
-        confidence = float(confidence)
 
         if answer and confidence >= 0.8:
-            # Use LLaMA to refine the response
-            prompt = f"Rephrase this information in a professional and clear tone:\n\n{answer}"
-            inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
-            outputs = llama_model.generate(
-                **inputs,
-                max_new_tokens=140,
-                do_sample=True,
-                top_k=50,
-                temperature=0.7
-            )
-            refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-
-            final_answer = refined_response.split("\n\n")[-1].strip()
-
-            # Update memory with the latest interaction
-            session_memory[session_id].append((question, final_answer))
+            logger.info(f"Database response found for query: {question} with confidence {confidence}")
+            session_memory[session_id].append((question, answer))
             if len(session_memory[session_id]) > 5:  # Limit memory size
                 session_memory[session_id].pop(0)
-
             return {
-                "answer": final_answer,
+                "answer": answer,
                 "confidence": confidence,
-                "source": "database + llama",
+                "source": "database",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 7: Handle fallback responses if no database match is found
+        # Step 4: Handle fallback with improved matching
         fallback_response = fuzzy_match_fallback(question)
         if fallback_response:
-            logger.info(f"Using fallback response for query: {question}")
+            logger.info(f"Fallback response used for query: {question}")
             session_memory[session_id].append((question, fallback_response))
             if len(session_memory[session_id]) > 5:
                 session_memory[session_id].pop(0)
             return {
                 "answer": fallback_response,
                 "confidence": 1.0,
-                "source": "fuzzy fallback knowledge base",
+                "source": "fuzzy fallback",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 8: Default response for no matches
-        fallback_answer = "I'm sorry, I couldn't find relevant information."
+        # Step 5: Default response for no matches
         logger.info(f"No valid response found for query: {question}")
-        session_memory[session_id].append((question, fallback_answer))
+        default_response = "I'm sorry, I couldn't find relevant information."
+        session_memory[session_id].append((question, default_response))
         if len(session_memory[session_id]) > 5:
             session_memory[session_id].pop(0)
         return {
-            "answer": fallback_answer,
+            "answer": default_response,
             "confidence": 0.0,
-            "source": "fallback response",
+            "source": "default fallback",
             "response_time": f"{time.time() - start_time:.2f} seconds",
         }
 
     except HTTPException as e:
-        raise e  # Let custom handler handle HTTP errors
+        raise e
     except Exception as e:
         logger.exception("Error in /chat endpoint")
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
