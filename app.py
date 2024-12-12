@@ -240,8 +240,13 @@ def fuzzy_match_fallback(question: str) -> str:
         result = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
         if result:
             match, score = result[0], result[1]
-            if score >= 80:  # Set threshold for acceptable match
-                logger.info(f"Fuzzy match found: {match} with score {score}")
+            logger.info(f"Fuzzy match attempt: '{match}' with score {score}")
+            
+            # Lower threshold for specific keywords
+            threshold = 70 if "epr" in question.lower() else 80
+
+            if score >= threshold:  # Adjust threshold dynamically
+                logger.info(f"Fuzzy match accepted: {match} with score {score}")
                 return FALLBACK_KB[match]
             else:
                 logger.warning(f"Low confidence match: {match} with score {score}")
@@ -299,6 +304,8 @@ async def chat_endpoint(request: Request):
         # Step 4: Build a dynamic prompt using conversation history
         memory_context = " ".join([f"User: {q} Bot: {r}" for q, r in session_memory[session_id]])
         full_query = f"{memory_context} User: {question}" if memory_context else question
+        logger.info(f"Dynamic prompt for query: {full_query}")
+
 
         # Step 5: Compute embedding for the full query
         user_embedding = compute_embedding(full_query)
@@ -308,6 +315,7 @@ async def chat_endpoint(request: Request):
         confidence = float(confidence)
 
         # Step 7: Handle fallback responses
+        # Fallback response prioritization
         fallback_response = fuzzy_match_fallback(question)
         if fallback_response:
             session_memory[session_id].append((question, fallback_response))
@@ -333,14 +341,14 @@ async def chat_endpoint(request: Request):
                 temperature=0.7
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-
+        
             final_answer = refined_response.split("\n\n")[-1].strip()
-
+        
             # Update memory with the latest interaction
             session_memory[session_id].append((question, final_answer))
             if len(session_memory[session_id]) > 5:  # Limit memory size
                 session_memory[session_id].pop(0)
-
+        
             return {
                 "answer": final_answer,
                 "confidence": confidence,
