@@ -223,7 +223,7 @@ async def chat_endpoint(request: Request):
 
         # Step 3: Use LLaMA to refine the response if a valid database match is found
         if answer and confidence >= 0.8:
-            prompt = f"Rephrase this information in a friendly and conversational tone:\n\n{answer}"
+            prompt = f"Rephrase this information in a professional and clear tone:\n\n{answer}"
 
             inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
             outputs = llama_model.generate(
@@ -235,8 +235,11 @@ async def chat_endpoint(request: Request):
             )
             refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
+            # Ensure output is concise and excludes excessive intros
+            final_answer = refined_response.split("\n\n")[-1].strip()
+
             return {
-                "answer": refined_response,
+                "answer": final_answer,
                 "confidence": confidence,
                 "source": "database + llama",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
