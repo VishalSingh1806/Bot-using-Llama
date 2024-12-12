@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
@@ -191,6 +191,17 @@ def fuzzy_match_fallback(question: str) -> str:
         logger.exception("Error during fuzzy matching")
         return None
 
+# Custom Exception Handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    logger.warning(f"HTTP error occurred: {exc.detail}")
+    return JSONResponse(status_code=exc.status_code, content={"message": exc.detail})
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled exception occurred")
+    return JSONResponse(status_code=500, content={"message": "An unexpected error occurred. Please try again later."})
+
 # Chat Endpoint
 @app.post("/chat")
 async def chat_endpoint(request: Request):
@@ -198,10 +209,15 @@ async def chat_endpoint(request: Request):
         start_time = time.time()
 
         # Parse the user query
-        data = await request.json()
-        question = data.get("message", "").strip().lower()
+        try:
+            data = await request.json()
+            question = data.get("message", "").strip().lower()
+        except ValueError:
+            logger.warning("Malformed JSON data received")
+            raise HTTPException(status_code=400, detail="Invalid JSON data.")
 
         if not question:
+            logger.warning("Received empty message")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
         # Handle predefined fallback queries with fuzzy matching
@@ -253,11 +269,8 @@ async def chat_endpoint(request: Request):
             "response_time": f"{time.time() - start_time:.2f} seconds",
         }
 
+    except HTTPException as e:
+        raise e  # Let the custom HTTP exception handler handle it
     except Exception as e:
         logger.exception("Error in /chat endpoint")
-        return {
-            "answer": "An internal error occurred. Please try again later.",
-            "confidence": 0.0,
-            "source": "error",
-            "response_time": f"{time.time() - start_time:.2f} seconds",
-        }
+        raise HTTPException(status_code=500, detail="An internal server error occurred.")
