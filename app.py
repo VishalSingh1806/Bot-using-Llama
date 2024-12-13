@@ -358,7 +358,7 @@ async def chat_endpoint(request: Request):
         # Step 3: Query the database for a relevant answer
         db_answer, confidence = query_validated_qa(user_embedding, question)
 
-        if db_answer and confidence >= 0.7:
+        if db_answer and confidence >= 0.8:
             logger.info(f"Database response found for query: {question} with confidence {confidence}")
             refined_answer = refine_with_llama(question, db_answer)
             session_memory[session_id].append((question, refined_answer))
