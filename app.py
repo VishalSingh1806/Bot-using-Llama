@@ -367,7 +367,7 @@ async def chat_endpoint(request: Request):
 
             return {
                 "answer": refined_answer,
-                "confidence": confidence,
+                "confidence": float(confidence),
                 "source": "database + llama refinement",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
