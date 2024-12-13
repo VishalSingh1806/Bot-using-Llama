@@ -60,6 +60,7 @@ FALLBACK_KB = {
     "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses related to Extended Producer Responsibility."
 }
 
+reference_embeddings = np.array([compute_embedding(q) for q in reference_queries])
 
 reference_queries = [
     "What is EPR?",
@@ -67,7 +68,6 @@ reference_queries = [
     "What are EPR compliance rules?",
     "How do I register for EPR compliance?"
 ]
-reference_embeddings = np.array([compute_embedding(q) for q in reference_queries])
 
 
 
