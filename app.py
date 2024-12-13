@@ -25,6 +25,10 @@ from collections import defaultdict
 session_memory = defaultdict(list)  # {session_id: [(query, response), ...]}
 conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
 
+# Global variables for dynamic keyword storage and frequency tracking
+DYNAMIC_KEYWORDS = set()  # Set to store unique keywords
+keyword_frequency = defaultdict(int)  # Defaultdict to track keyword frequency
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
