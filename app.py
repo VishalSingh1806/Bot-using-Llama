@@ -10,13 +10,15 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 from rapidfuzz import fuzz, process
+import json
+import re
 import logging
 import os
 import random
 import time
 from functools import lru_cache
 from collections import defaultdict
-import re
+
 
 
 # In-memory storage for session-based memory
