@@ -65,7 +65,9 @@ FALLBACK_KB = {
 async def lifespan(app: FastAPI):
     """Handle application startup and shutdown."""
     logger.info("Application startup: Initializing resources.")
+    load_keywords_from_file()  # Load keywords during startup
     yield
+    save_keywords_to_file()  # Save keywords during shutdown
     logger.info("Application shutdown: Cleaning up resources.")
 
 # Initialize FastAPI app with lifespan
@@ -349,17 +351,38 @@ async def chat_endpoint(request: Request):
 
         # Parse request data
         data = await request.json()
-        question = data.get("message", "").strip().lower()
+        question = preprocess_query(data.get("message", "").strip())  # Preprocess query
         session_id = data.get("session_id", "default")
 
         if not question:
             logger.warning("Received empty message")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Check query relevance
+        # Load keywords dynamically (if applicable)
+        load_keywords_from_file()
+
+        # Step 1: Check for exact or partial match
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT question FROM ValidatedQA")
+        db_questions = [row[0] for row in cursor.fetchall()]
+        partial_match = find_exact_or_partial_match(question, db_questions)
+
+        if partial_match:
+            cursor.execute("SELECT answer FROM ValidatedQA WHERE question = ?", (partial_match,))
+            db_answer = cursor.fetchone()[0]
+            logger.info(f"Exact or partial match found: {partial_match}")
+            return {
+                "answer": db_answer,
+                "confidence": 1.0,
+                "source": "exact or partial match",
+                "response_time": f"{time.time() - start_time:.2f} seconds",
+            }
+
+        # Step 2: Check query relevance
         if not is_query_relevant(question, reference_embeddings):
             logger.info(f"Ambiguous or irrelevant query: {question}")
-            # Attempt to process query anyway
+            # Attempt to process query anyway using fuzzy match fallback
             fallback_response = fuzzy_match_fallback(question)
             if fallback_response:
                 return {
@@ -369,7 +392,7 @@ async def chat_endpoint(request: Request):
                     "response_time": f"{time.time() - start_time:.2f} seconds",
                 }
 
-        # Step 2: Use memory context for better embeddings
+        # Step 3: Use memory context for better embeddings
         memory_context = " ".join([f"User: {q} Bot: {r}" for q, r in session_memory[session_id]])
         full_query = f"{memory_context} User: {question}" if memory_context else question
         logger.info(f"Dynamic prompt for query: {full_query}")
@@ -377,7 +400,7 @@ async def chat_endpoint(request: Request):
         # Compute embedding for the full query
         user_embedding = compute_embedding(full_query)
 
-        # Step 3: Query the database for a relevant answer
+        # Step 4: Query the database for a relevant answer
         db_answer, confidence = query_validated_qa(user_embedding, question)
 
         if db_answer and confidence >= 0.8:
@@ -387,6 +410,9 @@ async def chat_endpoint(request: Request):
             if len(session_memory[session_id]) > 5:  # Limit memory size
                 session_memory[session_id].pop(0)
 
+            # Learn keywords dynamically
+            learn_keywords_from_query(question)
+
             return {
                 "answer": refined_answer,
                 "confidence": float(confidence),
@@ -394,13 +420,17 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 4: Handle fallback with improved matching
+        # Step 5: Handle fallback with improved matching
         fallback_response = fuzzy_match_fallback(question)
         if fallback_response:
             logger.info(f"Fallback response used for query: {question}")
             session_memory[session_id].append((question, fallback_response))
             if len(session_memory[session_id]) > 5:
                 session_memory[session_id].pop(0)
+
+            # Learn keywords dynamically
+            learn_keywords_from_query(question)
+
             return {
                 "answer": fallback_response,
                 "confidence": 1.0,
@@ -408,12 +438,16 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 5: Default response for no matches
+        # Step 6: Default response for no matches
         logger.info(f"No valid response found for query: {question}")
         default_response = "I couldn't find relevant information. Please ask about Extended Producer Responsibility (EPR)."
         session_memory[session_id].append((question, default_response))
         if len(session_memory[session_id]) > 5:
             session_memory[session_id].pop(0)
+
+        # Learn keywords dynamically
+        learn_keywords_from_query(question)
+
         return {
             "answer": default_response,
             "confidence": 0.0,
