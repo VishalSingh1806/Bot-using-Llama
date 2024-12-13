@@ -233,8 +233,13 @@ def load_keywords_from_file():
 
 def save_keywords_to_file():
     """Save dynamic keywords to a file."""
-    with open("dynamic_keywords.json", "w") as f:
-        json.dump({"keywords": list(DYNAMIC_KEYWORDS), "frequency": keyword_frequency}, f)
+    try:
+        with open("dynamic_keywords.json", "w") as f:
+            json.dump({"keywords": list(DYNAMIC_KEYWORDS), "frequency": dict(keyword_frequency)}, f)
+        logger.info("Keywords successfully saved to file.")
+    except Exception as e:
+        logger.error(f"Failed to save keywords to file: {e}")
+
 
 def load_keywords_from_file():
     """Load dynamic keywords from a file."""
