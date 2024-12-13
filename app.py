@@ -25,11 +25,6 @@ from collections import defaultdict
 session_memory = defaultdict(list)  # {session_id: [(query, response), ...]}
 conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
 
-# Initialize dynamic keyword storage and frequency tracking
-DYNAMIC_KEYWORDS = set()  # Set to store unique keywords
-keyword_frequency = defaultdict(int)  # Defaultdict to track keyword frequency
-
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -215,30 +210,40 @@ def load_keywords_from_file():
     """Load dynamic keywords from a file."""
     global DYNAMIC_KEYWORDS, keyword_frequency
     try:
-        if os.path.exists("dynamic_keywords.json") and os.path.getsize("dynamic_keywords.json") > 0:
-            with open("dynamic_keywords.json", "r") as f:
-                data = json.load(f)
-                DYNAMIC_KEYWORDS.update(data.get("keywords", []))
-                keyword_frequency.update(data.get("frequency", {}))
-                logger.info("Keywords successfully loaded from file.")
+        if os.path.exists("dynamic_keywords.json"):
+            if os.path.getsize("dynamic_keywords.json") > 0:  # Check if file is not empty
+                with open("dynamic_keywords.json", "r") as f:
+                    data = json.load(f)
+                    DYNAMIC_KEYWORDS.update(data.get("keywords", []))
+                    keyword_frequency.update(data.get("frequency", {}))
+                    logger.info("Keywords successfully loaded from file.")
+            else:
+                logger.warning("Keyword file is empty. Starting fresh.")
         else:
-            logger.warning("Keyword file is empty or does not exist. Starting fresh.")
-            DYNAMIC_KEYWORDS.clear()
-            keyword_frequency.clear()
-    except (json.JSONDecodeError, ValueError) as e:
-        logger.error(f"Keyword file is corrupted or unreadable: {e}. Starting fresh.")
-        DYNAMIC_KEYWORDS.clear()
-        keyword_frequency.clear()
+            logger.warning("Keyword file does not exist. Starting fresh.")
+    except json.JSONDecodeError as e:
+        logger.error(f"Keyword file is corrupted: {e}. Starting fresh.")
+    except Exception as e:
+        logger.error(f"Unexpected error loading keywords: {e}. Starting fresh.")
+    finally:
+        # Ensure keywords and frequency are initialized to avoid errors
+        DYNAMIC_KEYWORDS = DYNAMIC_KEYWORDS or set()
+        keyword_frequency = keyword_frequency or defaultdict(int)
 
 
 def save_keywords_to_file():
     """Save dynamic keywords to a file."""
     try:
         with open("dynamic_keywords.json", "w") as f:
-            json.dump({"keywords": list(DYNAMIC_KEYWORDS), "frequency": dict(keyword_frequency)}, f)
+            json.dump(
+                {"keywords": list(DYNAMIC_KEYWORDS), "frequency": dict(keyword_frequency)},
+                f,
+                indent=4
+            )
         logger.info("Keywords successfully saved to file.")
     except Exception as e:
         logger.error(f"Failed to save keywords to file: {e}")
+
 
 
 def load_keywords_from_file():
