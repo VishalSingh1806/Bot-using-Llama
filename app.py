@@ -149,8 +149,9 @@ def compute_embedding(text: str):
     """Compute embedding for a given text using Sentence-BERT."""
     try:
         model = load_sentence_bert()
-        # Ensure the output is a 2D array
-        return model.encode(text).reshape(1, -1)
+        embedding = model.encode(text).reshape(1, -1)
+        logger.info(f"Computed embedding shape: {embedding.shape}")
+        return embedding
     except Exception as e:
         logger.exception("Error computing embedding")
         raise
@@ -170,8 +171,6 @@ def is_query_relevant(query: str, reference_embeddings: np.ndarray, threshold: f
     try:
         # Compute query embedding
         query_embedding = compute_embedding(query)
-        # Log shapes for debugging
-        logger.info(f"Query embedding shape: {query_embedding.shape}, Reference embeddings shape: {reference_embeddings.shape}")
         # Compare with reference embeddings
         similarities = cosine_similarity(query_embedding, reference_embeddings)
         max_similarity = max(similarities[0])  # Get the highest similarity score
@@ -215,7 +214,7 @@ def load_keywords_from_file():
         logger.warning("Keyword file not found. Starting fresh.")
 
 
-def query_validated_qa(user_embedding):
+def query_validated_qa(user_embedding, question: str):
     """Query the ValidatedQA table for the best match."""
     try:
         conn = connect_db()
@@ -230,23 +229,39 @@ def query_validated_qa(user_embedding):
             if row is None:
                 break
 
-            _, db_answer, db_embedding = row
+            db_question, db_answer, db_embedding = row
             db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
+
+            # Compute similarity
             similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
 
+            # Log similarity for debugging
+            logger.info(f"Similarity for query '{question}' with DB question '{db_question}': {similarity}")
+
+            # Exact text match fallback
+            if db_question.strip().lower() == question.strip().lower():
+                logger.info(f"Exact match found for '{question}' in database.")
+                return db_answer, 1.0
+
+            # Track the best match
             if similarity > max_similarity:
                 max_similarity = similarity
                 best_answer = db_answer
 
         conn.close()
 
-        if max_similarity >= 0.8:  # Similarity threshold
-            return best_answer, float(max_similarity)
+        # Return best match if similarity exceeds threshold
+        if max_similarity >= 0.7:
+            logger.info(f"Best match found with confidence {max_similarity}: {best_answer}")
+            return best_answer, max_similarity
 
+        logger.info(f"No relevant match found for query: {question}")
         return None, 0.0
+
     except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
         return None, 0.0
+
 
 def fuzzy_match_fallback(question: str) -> str:
     """Use rapidfuzz to find the closest fallback response."""
@@ -271,6 +286,26 @@ def fuzzy_match_fallback(question: str) -> str:
     except Exception as e:
         logger.exception("Error during fuzzy matching")
         return None
+
+def refine_with_llama(question: str, db_answer: str):
+    """Refine database answer using LLaMA."""
+    try:
+        prompt = f"Rephrase this information to directly answer the question:\n\nQuestion: {question}\n\nAnswer: {db_answer}"
+        inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
+        outputs = llama_model.generate(
+            **inputs,
+            max_new_tokens=140,
+            do_sample=True,
+            top_k=50,
+            temperature=0.7
+        )
+        refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+        refined_answer = refined_response.split("\n\n")[-1].strip()
+        logger.info(f"Refined response: {refined_answer}")
+        return refined_answer
+    except Exception as e:
+        logger.exception("Error refining response with LLaMA")
+        return db_answer  # Fallback to the original answer if LLaMA fails
 
 
 # Custom Exception Handlers
@@ -312,7 +347,6 @@ async def chat_endpoint(request: Request):
                     "response_time": f"{time.time() - start_time:.2f} seconds",
                 }
 
-
         # Step 2: Use memory context for better embeddings
         memory_context = " ".join([f"User: {q} Bot: {r}" for q, r in session_memory[session_id]])
         full_query = f"{memory_context} User: {question}" if memory_context else question
@@ -322,24 +356,11 @@ async def chat_endpoint(request: Request):
         user_embedding = compute_embedding(full_query)
 
         # Step 3: Query the database for a relevant answer
-        db_answer, confidence = query_validated_qa(user_embedding)
+        db_answer, confidence = query_validated_qa(user_embedding, question)
 
         if db_answer and confidence >= 0.7:
             logger.info(f"Database response found for query: {question} with confidence {confidence}")
-
-            # Refine the database answer using LLaMA
-            prompt = f"Rephrase this information to directly answer the question:\n\nQuestion: {question}\n\nAnswer: {db_answer}"
-            inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
-            outputs = llama_model.generate(
-                **inputs,
-                max_new_tokens=140,
-                do_sample=True,
-                top_k=50,
-                temperature=0.7
-            )
-            refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-            refined_answer = refined_response.split("\n\n")[-1].strip()
-
+            refined_answer = refine_with_llama(question, db_answer)
             session_memory[session_id].append((question, refined_answer))
             if len(session_memory[session_id]) > 5:  # Limit memory size
                 session_memory[session_id].pop(0)
