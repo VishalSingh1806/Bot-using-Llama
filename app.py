@@ -16,6 +16,7 @@ import random
 import time
 from functools import lru_cache
 from collections import defaultdict
+import re
 
 
 # In-memory storage for session-based memory
@@ -135,6 +136,27 @@ except Exception as e:
 # Suppress symlink warnings for Hugging Face cache (Windows-specific)
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="cache-system uses symlinks by default")
+
+
+def preprocess_query(query):
+    # Remove years and extra spaces
+    query = re.sub(r'\b\d{4}\b', '', query)
+    # Convert to lowercase and strip whitespace
+    query = query.lower().strip()
+    return query
+
+def find_exact_or_partial_match(query, db_questions):
+    for db_question in db_questions:
+        if query in db_question.lower() or db_question.lower() in query:
+            return db_question  # Return the closest match
+    return None
+
+def fuzzy_match_question(query, db_questions, threshold=75):
+    match = process.extractOne(query, db_questions, scorer=fuzz.ratio)
+    if match and match[1] >= threshold:
+        return match[0]  # Return the best-matching question
+    return None
+
 
 # Utility functions
 def connect_db():
