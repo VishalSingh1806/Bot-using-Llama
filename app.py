@@ -223,11 +223,12 @@ def load_keywords_from_file():
                 logger.info("Keywords successfully loaded from file.")
         else:
             logger.warning("Keyword file is empty or does not exist. Starting fresh.")
-    except json.JSONDecodeError:
-        logger.error("Keyword file is corrupted. Starting fresh.")
+            DYNAMIC_KEYWORDS.clear()
+            keyword_frequency.clear()
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Keyword file is corrupted or unreadable: {e}. Starting fresh.")
         DYNAMIC_KEYWORDS.clear()
         keyword_frequency.clear()
-
 
 
 def save_keywords_to_file():
