@@ -60,17 +60,6 @@ FALLBACK_KB = {
     "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses related to Extended Producer Responsibility."
 }
 
-reference_embeddings = np.array([compute_embedding(q) for q in reference_queries])
-
-reference_queries = [
-    "What is EPR?",
-    "Explain plastic waste management.",
-    "What are EPR compliance rules?",
-    "How do I register for EPR compliance?"
-]
-
-
-
 # Define lifespan event handlers
 async def lifespan(app: FastAPI):
     """Handle application startup and shutdown."""
@@ -164,6 +153,15 @@ def compute_embedding(text: str):
     except Exception as e:
         logger.exception("Error computing embedding")
         raise
+
+reference_queries = [
+    "What is EPR?",
+    "Explain plastic waste management.",
+    "What are EPR compliance rules?",
+    "How do I register for EPR compliance?"
+]
+reference_embeddings = np.array([compute_embedding(q) for q in reference_queries])
+
 
 def is_query_relevant(query: str, reference_embeddings: np.ndarray, threshold: float = 0.7) -> bool:
     """Determine if a query is relevant to EPR using semantic similarity."""
