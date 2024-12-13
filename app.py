@@ -23,6 +23,10 @@ import re
 session_memory = defaultdict(list)  # {session_id: [(query, response), ...]}
 conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
 
+# Initialize dynamic keyword storage and frequency tracking
+DYNAMIC_KEYWORDS = set()  # Set to store unique keywords
+keyword_frequency = defaultdict(int)  # Defaultdict to track keyword frequency
+
 
 # Configure logging
 logging.basicConfig(
@@ -207,7 +211,7 @@ def is_query_relevant(query: str, reference_embeddings: np.ndarray, threshold: f
 
 def learn_keywords_from_query(query: str):
     """Extract and save new keywords from user queries."""
-    global DYNAMIC_KEYWORDS
+    global DYNAMIC_KEYWORDS, keyword_frequency  # Ensure global access
 
     # Split the query into words and filter based on length or stopwords
     new_keywords = [word for word in query.split() if len(word) > 3]
@@ -220,6 +224,7 @@ def learn_keywords_from_query(query: str):
 
     # Optionally log new keywords for analysis
     logger.info(f"Learned new keywords: {new_keywords}")
+
 
 def save_keywords_to_file():
     """Save dynamic keywords to a file."""
