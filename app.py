@@ -22,9 +22,6 @@ from collections import defaultdict
 session_memory = defaultdict(list)  # {session_id: [(query, response), ...]}
 conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
 
-# In-memory storage for dynamic keyword learning
-DYNAMIC_KEYWORDS = set(EPR_KEYWORDS)  # Start with existing keywords
-keyword_frequency = defaultdict(int)  # Track keyword usage frequency
 
 # Configure logging
 logging.basicConfig(
@@ -109,6 +106,11 @@ EPR_KEYWORDS = [
     "producer"
     "plastic"
 ]
+
+# In-memory storage for dynamic keyword learning
+DYNAMIC_KEYWORDS = set(EPR_KEYWORDS)  # Start with existing keywords
+keyword_frequency = defaultdict(int)  # Track keyword usage frequency
+
 
 # Define lifespan event handlers
 async def lifespan(app: FastAPI):
