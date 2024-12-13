@@ -211,21 +211,23 @@ def is_query_relevant(query: str, reference_embeddings: np.ndarray, threshold: f
         raise
 
 
-def learn_keywords_from_query(query: str):
-    """Extract and save new keywords from user queries."""
-    global DYNAMIC_KEYWORDS, keyword_frequency  # Ensure global access
+def load_keywords_from_file():
+    """Load dynamic keywords from a file."""
+    global DYNAMIC_KEYWORDS, keyword_frequency
+    try:
+        if os.path.exists("dynamic_keywords.json") and os.path.getsize("dynamic_keywords.json") > 0:
+            with open("dynamic_keywords.json", "r") as f:
+                data = json.load(f)
+                DYNAMIC_KEYWORDS.update(data.get("keywords", []))
+                keyword_frequency.update(data.get("frequency", {}))
+                logger.info("Keywords successfully loaded from file.")
+        else:
+            logger.warning("Keyword file is empty or does not exist. Starting fresh.")
+    except json.JSONDecodeError:
+        logger.error("Keyword file is corrupted. Starting fresh.")
+        DYNAMIC_KEYWORDS.clear()
+        keyword_frequency.clear()
 
-    # Split the query into words and filter based on length or stopwords
-    new_keywords = [word for word in query.split() if len(word) > 3]
-
-    # Update dynamic keyword storage
-    for keyword in new_keywords:
-        if keyword not in DYNAMIC_KEYWORDS:
-            DYNAMIC_KEYWORDS.add(keyword)
-            keyword_frequency[keyword] += 1  # Track frequency
-
-    # Optionally log new keywords for analysis
-    logger.info(f"Learned new keywords: {new_keywords}")
 
 
 def save_keywords_to_file():
