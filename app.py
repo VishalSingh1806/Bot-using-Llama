@@ -60,56 +60,15 @@ FALLBACK_KB = {
     "how do you work": "I analyze your questions, look up answers in a database, and refine them using an advanced AI model for conversational responses related to Extended Producer Responsibility."
 }
 
-# EPR Keywords for Validation
-EPR_KEYWORDS = [
-    "epr",
-    "extended producer responsibility",
-    "plastic waste management",
-    "recycling",
-    "environment",
-    "producer responsibility",
-    "waste",
-    "management",
-    "sustainability",
-    "eco-friendly",
-    "pollution control",
-    "waste collection",
-    "waste segregation",
-    "recyclable materials",
-    "plastic recycling",
-    "epr compliance",
-    "environmental responsibility",
-    "post-consumer waste",
-    "material recovery",
-    "circular economy",
-    "waste reduction",
-    "responsible manufacturing",
-    "waste disposal",
-    "eco-conscious",
-    "epr targets",
-    "green initiatives",
-    "sustainable packaging",
-    "producer registration",
-    "epr schemes",
-    "end-of-life products",
-    "collection and recycling",
-    "resource efficiency",
-    "environmental impact",
-    "epr rules",
-    "plastic credits",
-    "recovery obligations",
-    "compliance reporting",
-    "sustainable development"
-    "manufacture"
-    "import"
-    "importer"
-    "producer"
-    "plastic"
-]
 
-# In-memory storage for dynamic keyword learning
-DYNAMIC_KEYWORDS = set(EPR_KEYWORDS)  # Start with existing keywords
-keyword_frequency = defaultdict(int)  # Track keyword usage frequency
+reference_queries = [
+    "What is EPR?",
+    "Explain plastic waste management.",
+    "What are EPR compliance rules?",
+    "How do I register for EPR compliance?"
+]
+reference_embeddings = np.array([compute_embedding(q) for q in reference_queries])
+
 
 
 # Define lifespan event handlers
@@ -206,18 +165,15 @@ def compute_embedding(text: str):
         logger.exception("Error computing embedding")
         raise
 
-def is_query_relevant(query: str) -> bool:
-    """Check if the query is relevant and learn new keywords."""
-    query = query.lower()
-    words = query.split()
+def is_query_relevant(query: str, reference_embeddings: np.ndarray, threshold: float = 0.7) -> bool:
+    """Determine if a query is relevant to EPR using semantic similarity."""
+    # Compute query embedding
+    query_embedding = compute_embedding(query)
+    # Compare with reference embeddings
+    similarities = cosine_similarity(query_embedding, reference_embeddings)
+    max_similarity = max(similarities[0])  # Get the highest similarity score
+    return max_similarity >= threshold
 
-    # Check if any existing keyword is in the query
-    if any(word in DYNAMIC_KEYWORDS for word in words):
-        return True
-
-    # If no keywords match, learn from the query
-    learn_keywords_from_query(query)
-    return False
 
 def learn_keywords_from_query(query: str):
     """Extract and save new keywords from user queries."""
@@ -337,14 +293,18 @@ async def chat_endpoint(request: Request):
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
         # Check query relevance
-        if not is_query_relevant(question):
-            logger.info(f"Irrelevant query logged: {question}")
-            return {
-                "answer": "I can only assist with questions related to Extended Producer Responsibility (EPR).",
-                "confidence": 0.0,
-                "source": "query validation",
-                "response_time": f"{time.time() - start_time:.2f} seconds",
-            }
+        if not is_query_relevant(question, reference_embeddings):
+            logger.info(f"Ambiguous or irrelevant query: {question}")
+            # Attempt to process query anyway
+            fallback_response = fuzzy_match_fallback(question)
+            if fallback_response:
+                return {
+                    "answer": fallback_response,
+                    "confidence": 0.5,
+                    "source": "fallback for ambiguous query",
+                    "response_time": f"{time.time() - start_time:.2f} seconds",
+                }
+
 
         # Step 2: Use memory context for better embeddings
         memory_context = " ".join([f"User: {q} Bot: {r}" for q, r in session_memory[session_id]])
