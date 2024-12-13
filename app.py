@@ -149,10 +149,12 @@ def compute_embedding(text: str):
     """Compute embedding for a given text using Sentence-BERT."""
     try:
         model = load_sentence_bert()
+        # Ensure the output is a 2D array
         return model.encode(text).reshape(1, -1)
     except Exception as e:
         logger.exception("Error computing embedding")
         raise
+
 
 reference_queries = [
     "What is EPR?",
@@ -160,17 +162,24 @@ reference_queries = [
     "What are EPR compliance rules?",
     "How do I register for EPR compliance?"
 ]
-reference_embeddings = np.array([compute_embedding(q) for q in reference_queries])
+reference_embeddings = np.vstack([compute_embedding(q) for q in reference_queries])
 
 
 def is_query_relevant(query: str, reference_embeddings: np.ndarray, threshold: float = 0.7) -> bool:
     """Determine if a query is relevant to EPR using semantic similarity."""
-    # Compute query embedding
-    query_embedding = compute_embedding(query)
-    # Compare with reference embeddings
-    similarities = cosine_similarity(query_embedding, reference_embeddings)
-    max_similarity = max(similarities[0])  # Get the highest similarity score
-    return max_similarity >= threshold
+    try:
+        # Compute query embedding
+        query_embedding = compute_embedding(query)
+        # Log shapes for debugging
+        logger.info(f"Query embedding shape: {query_embedding.shape}, Reference embeddings shape: {reference_embeddings.shape}")
+        # Compare with reference embeddings
+        similarities = cosine_similarity(query_embedding, reference_embeddings)
+        max_similarity = max(similarities[0])  # Get the highest similarity score
+        logger.info(f"Max similarity for query '{query}': {max_similarity}")
+        return max_similarity >= threshold
+    except Exception as e:
+        logger.exception("Error in is_query_relevant")
+        raise
 
 
 def learn_keywords_from_query(query: str):
