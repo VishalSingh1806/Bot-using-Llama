@@ -135,26 +135,6 @@ def load_sentence_bert():
         logger.exception("Failed to load Sentence-BERT model")
         raise RuntimeError(f"Failed to load Sentence-BERT model: {e}")
 
-# Adjust LLaMA 2 model loading
-try:
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    llama_tokenizer = AutoTokenizer.from_pretrained(
-        "meta-llama/Llama-2-7b-chat-hf",
-        use_auth_token=hf_token
-    )
-    llama_model = AutoModelForCausalLM.from_pretrained(
-        "meta-llama/Llama-2-7b-chat-hf",
-        device_map="auto",  # Improved device allocation
-        torch_dtype=torch.float16 if "cuda" in device else torch.float32,
-        low_cpu_mem_usage=True
-    ).to(device)
-
-    llama_model.eval()
-    logger.info("LLaMA 2 model loaded successfully on %s.", device)
-except Exception as e:
-    logger.exception("Failed to load LLaMA 2 model")
-    raise RuntimeError(f"Failed to load LLaMA 2 model: {e}")
-
 
 llama_model = None
 llama_tokenizer = None
