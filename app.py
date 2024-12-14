@@ -497,9 +497,9 @@ async def chat_endpoint(request: Request):
      except HTTPException as e:
         logger.warning(f"HTTP error: {e.detail}")
         raise e
-    except TypeError as te:
+     except TypeError as te:
         logger.error(f"Serialization error: {te}")
         raise HTTPException(status_code=500, detail="Response serialization error.")
-    except Exception as e:
+     except Exception as e:
         logger.exception("Unhandled error in /chat endpoint")
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
