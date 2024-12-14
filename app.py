@@ -32,6 +32,16 @@ keyword_frequency = defaultdict(int)  # Defaultdict to track keyword frequency
 
 SESSION_TIMEOUT = timedelta(hours=1)
 
+# Define clean_expired_sessions before using it in the scheduler
+def clean_expired_sessions():
+    """Clean expired sessions based on the SESSION_TIMEOUT."""
+    now = datetime.now()
+    for session_id in list(session_memory.keys()):
+        # Check if session has a timestamp and is older than SESSION_TIMEOUT
+        if session_memory[session_id] and now - session_memory[session_id][-1]['timestamp'] > SESSION_TIMEOUT:
+            del session_memory[session_id]
+            logger.info(f"Session {session_id} expired and was cleaned up.")
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(clean_expired_sessions, 'interval', hours=1)
 scheduler.start()
@@ -225,11 +235,6 @@ def is_query_relevant(query: str, reference_embeddings: np.ndarray, threshold: f
         logger.exception("Error in is_query_relevant")
         raise
         
-def clean_expired_sessions():
-    now = datetime.now()
-    for session_id in list(session_memory.keys()):
-        if session_memory[session_id] and now - session_memory[session_id][-1]['timestamp'] > SESSION_TIMEOUT:
-            del session_memory[session_id]
 
 def load_keywords_from_file():
     """Load dynamic keywords from a file."""
