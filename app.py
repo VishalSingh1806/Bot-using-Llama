@@ -234,6 +234,15 @@ def load_keywords_from_file():
         DYNAMIC_KEYWORDS = DYNAMIC_KEYWORDS or set()
         keyword_frequency = keyword_frequency or defaultdict(int)
 
+def learn_keywords_from_query(question):
+    global DYNAMIC_KEYWORDS, keyword_frequency
+    # Extract keywords from the query (can be a simple split or NLP-based extraction)
+    keywords = re.findall(r'\b\w+\b', question.lower())
+    for keyword in keywords:
+        DYNAMIC_KEYWORDS.add(keyword)
+        keyword_frequency[keyword] += 1
+    logger.info(f"Learned keywords: {keywords}")
+
 
 def save_keywords_to_file():
     """Save dynamic keywords to a file."""
@@ -247,19 +256,6 @@ def save_keywords_to_file():
         logger.info("Keywords successfully saved to file.")
     except Exception as e:
         logger.error(f"Failed to save keywords to file: {e}")
-
-
-
-def load_keywords_from_file():
-    """Load dynamic keywords from a file."""
-    global DYNAMIC_KEYWORDS, keyword_frequency
-    try:
-        with open("dynamic_keywords.json", "r") as f:
-            data = json.load(f)
-            DYNAMIC_KEYWORDS.update(data.get("keywords", []))
-            keyword_frequency.update(data.get("frequency", {}))
-    except FileNotFoundError:
-        logger.warning("Keyword file not found. Starting fresh.")
 
 
 def query_validated_qa(user_embedding, question: str):
