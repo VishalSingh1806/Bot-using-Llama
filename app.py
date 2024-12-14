@@ -21,7 +21,7 @@ from functools import lru_cache
 from collections import defaultdict
 
 
-
+SESSION_TIMEOUT = timedelta(hours=1)
 # In-memory storage for session-based memory
 session_memory = defaultdict(list)  # {session_id: [(query, response), ...]}
 conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
@@ -30,21 +30,36 @@ conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
 DYNAMIC_KEYWORDS = set()  # Set to store unique keywords
 keyword_frequency = defaultdict(int)  # Defaultdict to track keyword frequency
 
-SESSION_TIMEOUT = timedelta(hours=1)
+
 
 # Define clean_expired_sessions before using it in the scheduler
 def clean_expired_sessions():
     """Clean expired sessions based on the SESSION_TIMEOUT."""
-    now = datetime.now()
-    for session_id in list(session_memory.keys()):
-        # Check if session has a timestamp and is older than SESSION_TIMEOUT
-        if session_memory[session_id] and now - session_memory[session_id][-1]['timestamp'] > SESSION_TIMEOUT:
-            del session_memory[session_id]
-            logger.info(f"Session {session_id} expired and was cleaned up.")
+    try:
+        now = datetime.now()
+        expired_sessions = []
 
+        # Iterate through all sessions
+        for session_id, interactions in list(session_memory.items()):
+            if not interactions:
+                continue
+            # Check if the last interaction in the session is older than the timeout
+            if now - interactions[-1]["timestamp"] > SESSION_TIMEOUT:
+                expired_sessions.append(session_id)
+                del session_memory[session_id]
+
+        # Log cleaned sessions
+        if expired_sessions:
+            logger.info(f"Cleaned expired sessions: {expired_sessions}")
+        else:
+            logger.info("No expired sessions found during clean-up.")
+    except Exception as e:
+        logger.exception("Error during session clean-up")
+        
 scheduler = BackgroundScheduler()
 scheduler.add_job(clean_expired_sessions, 'interval', hours=1)
 scheduler.start()
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -404,10 +419,25 @@ async def chat_endpoint(request: Request):
             logger.warning("Received empty message")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
+        # Log new session creation
+        if session_id not in session_memory:
+            logger.info(f"New session created: {session_id}")
+
+        # Step 1: Add the current query to session memory
+        session_memory[session_id].append({
+            "query": question,
+            "response": "Processing...",
+            "timestamp": datetime.now()
+        })
+
+        # Limit memory size
+        if len(session_memory[session_id]) > 5:
+            session_memory[session_id].pop(0)
+
         # Load keywords dynamically (if applicable)
         load_keywords_from_file()
 
-        # Step 1: Check for exact or partial match
+        # Step 2: Check for exact or partial match in the database
         conn = connect_db()
         cursor = conn.cursor()
         cursor.execute("SELECT question FROM ValidatedQA")
@@ -418,6 +448,7 @@ async def chat_endpoint(request: Request):
             cursor.execute("SELECT answer FROM ValidatedQA WHERE question = ?", (partial_match,))
             db_answer = cursor.fetchone()[0]
             logger.info(f"Exact or partial match found: {partial_match}")
+            session_memory[session_id][-1]["response"] = db_answer  # Update session memory
             return {
                 "answer": db_answer,
                 "confidence": 1.0,
@@ -425,40 +456,36 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 2: Check query relevance
+        # Step 3: Check query relevance using embeddings
         if not is_query_relevant(question, reference_embeddings):
             logger.info(f"Ambiguous or irrelevant query: {question}")
             # Attempt to process query anyway using fuzzy match fallback
             fallback_response = fuzzy_match_fallback(question)
-            if fallback_response:
-                return {
-                    "answer": fallback_response,
-                    "confidence": 0.5,
-                    "source": "fallback for ambiguous query",
-                    "response_time": f"{time.time() - start_time:.2f} seconds",
-                }
+            session_memory[session_id][-1]["response"] = fallback_response or "No relevant information found."
+            return {
+                "answer": fallback_response or "I couldn't find relevant information.",
+                "confidence": 0.5,
+                "source": "fallback for ambiguous query",
+                "response_time": f"{time.time() - start_time:.2f} seconds",
+            }
 
-        # Step 3: Use memory context for better embeddings
-        memory_context = " ".join([f"User: {q} Bot: {r}" for q, r in session_memory[session_id]])
+        # Step 4: Use memory context for better embeddings
+        memory_context = build_memory_context(session_id)
         full_query = f"{memory_context} User: {question}" if memory_context else question
         logger.info(f"Dynamic prompt for query: {full_query}")
 
         # Compute embedding for the full query
         user_embedding = compute_embedding(full_query)
 
-        # Step 4: Query the database for a relevant answer
+        # Step 5: Query the database for a relevant answer using embeddings
         db_answer, confidence = query_validated_qa(user_embedding, question)
 
         if db_answer and confidence >= 0.8:
             logger.info(f"Database response found for query: {question} with confidence {confidence}")
             refined_answer = refine_with_llama(question, db_answer)
-            session_memory[session_id].append((question, refined_answer))
-            if len(session_memory[session_id]) > 5:  # Limit memory size
-                session_memory[session_id].pop(0)
-
-            # Learn keywords dynamically
+            session_memory[session_id][-1]["response"] = refined_answer  # Update session memory
+            # Dynamically learn keywords
             learn_keywords_from_query(question)
-
             return {
                 "answer": refined_answer,
                 "confidence": float(confidence),
@@ -466,34 +493,23 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 5: Handle fallback with improved matching
+        # Step 6: Handle fallback with fuzzy matching
         fallback_response = fuzzy_match_fallback(question)
-        if fallback_response:
-            logger.info(f"Fallback response used for query: {question}")
-            session_memory[session_id].append((question, fallback_response))
-            if len(session_memory[session_id]) > 5:
-                session_memory[session_id].pop(0)
+        session_memory[session_id][-1]["response"] = fallback_response or "No relevant information found."
+        # Dynamically learn keywords
+        learn_keywords_from_query(question)
+        return {
+            "answer": fallback_response or "I couldn't find relevant information.",
+            "confidence": 0.5,
+            "source": "fuzzy fallback",
+            "response_time": f"{time.time() - start_time:.2f} seconds",
+        }
 
-            # Learn keywords dynamically
-            learn_keywords_from_query(question)
-
-            return {
-                "answer": fallback_response,
-                "confidence": 1.0,
-                "source": "fuzzy fallback",
-                "response_time": f"{time.time() - start_time:.2f} seconds",
-            }
-
-        # Step 6: Default response for no matches
+        # Step 7: Default response if no matches are found
         logger.info(f"No valid response found for query: {question}")
         default_response = "I couldn't find relevant information. Please ask about Extended Producer Responsibility (EPR)."
-        session_memory[session_id].append((question, default_response))
-        if len(session_memory[session_id]) > 5:
-            session_memory[session_id].pop(0)
-
-        # Learn keywords dynamically
-        learn_keywords_from_query(question)
-
+        session_memory[session_id][-1]["response"] = default_response
+        learn_keywords_from_query(question)  # Dynamically learn keywords
         return {
             "answer": default_response,
             "confidence": 0.0,
