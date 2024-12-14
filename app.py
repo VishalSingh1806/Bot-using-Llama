@@ -4,9 +4,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
-from datetime import datetime
 import sqlite3
 import numpy as np
+from datetime import datetime, timedelta
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 from rapidfuzz import fuzz, process
@@ -14,8 +14,9 @@ import json
 import re
 import logging
 import os
-import random
 import time
+from apscheduler.schedulers.background import BackgroundScheduler
+import uuid
 from functools import lru_cache
 from collections import defaultdict
 
@@ -29,6 +30,11 @@ conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
 DYNAMIC_KEYWORDS = set()  # Set to store unique keywords
 keyword_frequency = defaultdict(int)  # Defaultdict to track keyword frequency
 
+SESSION_TIMEOUT = timedelta(hours=1)
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(clean_expired_sessions, 'interval', hours=1)
+scheduler.start()
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -75,6 +81,11 @@ async def lifespan(app: FastAPI):
     save_keywords_to_file()  # Save keywords during shutdown
     logger.info("Application shutdown: Cleaning up resources.")
 
+async def log_request_id(request: Request):
+    request_id = str(uuid.uuid4())
+    logger.info(f"Request ID: {request_id} - {request.method} {request.url}")
+    return request_id
+
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
 
@@ -88,17 +99,20 @@ DB_PATH = os.path.join(CURRENT_DIR, "knowledge_base.db")
 app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
 
 # Hugging Face token
-hf_token = "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"
+hf_token = os.getenv("HUGGINGFACE_TOKEN")
+if not hf_token:
+    raise RuntimeError("Hugging Face token not set in environment variables.")
+
 
 # Serve `index.html` for root route
 @app.get("/")
 async def read_root():
     """Serve the index.html file."""
     index_file = os.path.join(TEMPLATES_DIR, "index.html")
-    if os.path.exists(index_file):
-        return FileResponse(index_file)
-    logger.error("index.html not found")
-    raise HTTPException(status_code=404, detail="Frontend index.html not found")
+    if not os.path.exists(index_file):
+        logger.error("index.html not found")
+        raise HTTPException(status_code=404, detail="Frontend index.html not found")
+    return FileResponse(index_file)
 
 # Add CORS middleware
 app.add_middleware(
@@ -112,6 +126,7 @@ app.add_middleware(
 # Load Sentence-BERT model with caching
 @lru_cache(maxsize=1)
 def load_sentence_bert():
+    """Load the Sentence-BERT model."""
     try:
         model = SentenceTransformer("all-MiniLM-L6-v2")
         logger.info("Sentence-BERT model loaded successfully.")
@@ -129,7 +144,7 @@ try:
     )
     llama_model = AutoModelForCausalLM.from_pretrained(
         "meta-llama/Llama-2-7b-chat-hf",
-        device_map=None,
+        device_map="auto",  # Improved device allocation
         torch_dtype=torch.float16 if "cuda" in device else torch.float32,
         low_cpu_mem_usage=True
     ).to(device)
@@ -139,6 +154,27 @@ try:
 except Exception as e:
     logger.exception("Failed to load LLaMA 2 model")
     raise RuntimeError(f"Failed to load LLaMA 2 model: {e}")
+
+
+llama_model = None
+llama_tokenizer = None
+
+def get_llama_model():
+    global llama_model, llama_tokenizer
+    if llama_model is None or llama_tokenizer is None:
+        llama_tokenizer = AutoTokenizer.from_pretrained(
+            "meta-llama/Llama-2-7b-chat-hf",
+            use_auth_token=hf_token
+        )
+        llama_model = AutoModelForCausalLM.from_pretrained(
+            "meta-llama/Llama-2-7b-chat-hf",
+            device_map="auto",
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            low_cpu_mem_usage=True
+        ).to(device)
+        llama_model.eval()
+    return llama_model, llama_tokenizer
+
 
 # Suppress symlink warnings for Hugging Face cache (Windows-specific)
 import warnings
@@ -179,7 +215,7 @@ def compute_embedding(text: str):
     try:
         model = load_sentence_bert()
         embedding = model.encode(text).reshape(1, -1)
-        logger.info(f"Computed embedding shape: {embedding.shape}")
+        logger.info(f"Computed embedding for text: {text}")
         return embedding
     except Exception as e:
         logger.exception("Error computing embedding")
@@ -208,7 +244,12 @@ def is_query_relevant(query: str, reference_embeddings: np.ndarray, threshold: f
     except Exception as e:
         logger.exception("Error in is_query_relevant")
         raise
-
+        
+def clean_expired_sessions():
+    now = datetime.now()
+    for session_id in list(session_memory.keys()):
+        if session_memory[session_id] and now - session_memory[session_id][-1]['timestamp'] > SESSION_TIMEOUT:
+            del session_memory[session_id]
 
 def load_keywords_from_file():
     """Load dynamic keywords from a file."""
@@ -268,44 +309,30 @@ def query_validated_qa(user_embedding, question: str):
         max_similarity = 0.0
         best_answer = None
 
-        while True:
-            row = cursor.fetchone()
-            if row is None:
-                break
-
+        for row in cursor.fetchall():
             db_question, db_answer, db_embedding = row
             db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
 
             # Compute similarity
             similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
+            logger.debug(f"Similarity for '{question}' with '{db_question}': {similarity}")
 
-            # Log similarity for debugging
-            logger.info(f"Similarity for query '{question}' with DB question '{db_question}': {similarity}")
-
-            # Exact text match fallback
-            if db_question.strip().lower() == question.strip().lower():
-                logger.info(f"Exact match found for '{question}' in database.")
-                return db_answer, 1.0
-
-            # Track the best match
+            # Check for the best match
             if similarity > max_similarity:
                 max_similarity = similarity
                 best_answer = db_answer
 
         conn.close()
 
-        # Return best match if similarity exceeds threshold
         if max_similarity >= 0.7:
             logger.info(f"Best match found with confidence {max_similarity}: {best_answer}")
             return best_answer, max_similarity
 
         logger.info(f"No relevant match found for query: {question}")
         return None, 0.0
-
     except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
         return None, 0.0
-
 
 def fuzzy_match_fallback(question: str) -> str:
     """Use rapidfuzz to find the closest fallback response."""
@@ -332,9 +359,14 @@ def fuzzy_match_fallback(question: str) -> str:
         return None
 
 def refine_with_llama(question: str, db_answer: str):
-    """Refine database answer using LLaMA."""
     try:
-        prompt = f"Rephrase this information to directly answer the question:\n\nQuestion: {question}\n\nAnswer: {db_answer}"
+        llama_model, llama_tokenizer = get_llama_model()
+        prompt = (
+            "Rephrase this information to directly answer the question:\n\n"
+            f"Question: {question}\n\n"
+            f"Answer: {db_answer}\n\n"
+            "Provide a concise and direct response:"
+        )
         inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
         outputs = llama_model.generate(
             **inputs,
@@ -344,12 +376,18 @@ def refine_with_llama(question: str, db_answer: str):
             temperature=0.7
         )
         refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-        refined_answer = refined_response.split("\n\n")[-1].strip()
-        logger.info(f"Refined response: {refined_answer}")
-        return refined_answer
+        return refined_response
     except Exception as e:
         logger.exception("Error refining response with LLaMA")
-        return db_answer  # Fallback to the original answer if LLaMA fails
+        return db_answer
+
+def build_memory_context(session_id):
+    """Build context from session memory."""
+    if session_id not in session_memory or not session_memory[session_id]:
+        return ""
+    memory_context = " ".join([f"User: {q} Bot: {r}" for q, r in session_memory[session_id]])
+    logger.debug(f"Memory context for session {session_id}: {memory_context}")
+    return memory_context
 
 
 # Custom Exception Handlers
@@ -362,6 +400,12 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 async def general_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled exception occurred")
     return JSONResponse(status_code=500, content={"message": "An unexpected error occurred. Please try again later."})
+
+
+@app.get("/health")
+async def health_check():
+    """Check the health of the application."""
+    return {"status": "ok"}
 
 # Chat Endpoint
 @app.post("/chat")
