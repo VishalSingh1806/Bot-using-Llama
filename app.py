@@ -382,7 +382,9 @@ def build_memory_context(session_id):
     """Build context from session memory."""
     if session_id not in session_memory or not session_memory[session_id]:
         return ""
-    memory_context = " ".join([f"User: {q} Bot: {r}" for q, r in session_memory[session_id]])
+    memory_context = " ".join(
+        [f"User: {interaction['query']} Bot: {interaction['response']}" for interaction in session_memory[session_id]]
+    )
     logger.debug(f"Memory context for session {session_id}: {memory_context}")
     return memory_context
 
