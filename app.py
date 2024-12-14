@@ -109,10 +109,7 @@ DB_PATH = os.path.join(CURRENT_DIR, "knowledge_base.db")
 app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
 
 # Hugging Face token
-hf_token = os.getenv("HUGGINGFACE_TOKEN")
-if not hf_token:
-    raise RuntimeError("Hugging Face token not set in environment variables.")
-
+hf_token = "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"
 
 # Serve `index.html` for root route
 @app.get("/")
