@@ -414,7 +414,7 @@ async def chat_endpoint(request: Request):
 
         # Parse request data
         data = await request.json()
-        question = preprocess_query(data.get("message", "").strip())  # Preprocess query
+        question = preprocess_query(data.get("message", "").strip())
         session_id = data.get("session_id", "default")
 
         if not question:
@@ -436,21 +436,21 @@ async def chat_endpoint(request: Request):
         if len(session_memory[session_id]) > 5:
             session_memory[session_id].pop(0)
 
-        # Load keywords dynamically (if applicable)
+        # Load keywords dynamically
         load_keywords_from_file()
 
         # Step 2: Check for exact or partial match in the database
         conn = connect_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT question FROM ValidatedQA")
-        db_questions = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT question, answer FROM ValidatedQA")
+        db_entries = cursor.fetchall()
+        db_questions = [row[0] for row in db_entries]
         partial_match = find_exact_or_partial_match(question, db_questions)
 
         if partial_match:
-            cursor.execute("SELECT answer FROM ValidatedQA WHERE question = ?", (partial_match,))
-            db_answer = cursor.fetchone()[0]
+            db_answer = next((answer for q, answer in db_entries if q == partial_match), None)
             logger.info(f"Exact or partial match found: {partial_match}")
-            session_memory[session_id][-1]["response"] = db_answer  # Update session memory
+            session_memory[session_id][-1]["response"] = db_answer
             return {
                 "answer": db_answer,
                 "confidence": 1.0,
@@ -459,46 +459,27 @@ async def chat_endpoint(request: Request):
             }
 
         # Step 3: Check query relevance using embeddings
-        if not is_query_relevant(question, reference_embeddings):
-            logger.info(f"Ambiguous or irrelevant query: {question}")
-            # Attempt to process query anyway using fuzzy match fallback
-            fallback_response = fuzzy_match_fallback(question)
-            session_memory[session_id][-1]["response"] = fallback_response or "No relevant information found."
-            return {
-                "answer": fallback_response or "I couldn't find relevant information.",
-                "confidence": 0.5,
-                "source": "fallback for ambiguous query",
-                "response_time": f"{time.time() - start_time:.2f} seconds",
-            }
-
-        # Step 4: Use memory context for better embeddings
         memory_context = build_memory_context(session_id)
         full_query = f"{memory_context} User: {question}" if memory_context else question
-        logger.info(f"Dynamic prompt for query: {full_query}")
-
-        # Compute embedding for the full query
         user_embedding = compute_embedding(full_query)
 
-        # Step 5: Query the database for a relevant answer using embeddings
         db_answer, confidence = query_validated_qa(user_embedding, question)
 
-        if db_answer and confidence >= 0.8:
+        if db_answer and confidence >= 0.7:  # Lowered threshold
             logger.info(f"Database response found for query: {question} with confidence {confidence}")
             refined_answer = refine_with_llama(question, db_answer)
-            session_memory[session_id][-1]["response"] = refined_answer  # Update session memory
-            # Dynamically learn keywords
+            session_memory[session_id][-1]["response"] = refined_answer
             learn_keywords_from_query(question)
             return {
                 "answer": refined_answer,
-                "confidence": float(confidence),
+                "confidence": confidence,
                 "source": "database + llama refinement",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 6: Handle fallback with fuzzy matching
+        # Step 4: Fallback for no relevant database match
         fallback_response = fuzzy_match_fallback(question)
         session_memory[session_id][-1]["response"] = fallback_response or "No relevant information found."
-        # Dynamically learn keywords
         learn_keywords_from_query(question)
         return {
             "answer": fallback_response or "I couldn't find relevant information.",
@@ -507,20 +488,9 @@ async def chat_endpoint(request: Request):
             "response_time": f"{time.time() - start_time:.2f} seconds",
         }
 
-        # Step 7: Default response if no matches are found
-        logger.info(f"No valid response found for query: {question}")
-        default_response = "I couldn't find relevant information. Please ask about Extended Producer Responsibility (EPR)."
-        session_memory[session_id][-1]["response"] = default_response
-        learn_keywords_from_query(question)  # Dynamically learn keywords
-        return {
-            "answer": default_response,
-            "confidence": 0.0,
-            "source": "default fallback",
-            "response_time": f"{time.time() - start_time:.2f} seconds",
-        }
-
     except HTTPException as e:
+        logger.warning(f"HTTP error: {e.detail}")
         raise e
     except Exception as e:
-        logger.exception("Error in /chat endpoint")
+        logger.exception("Unhandled error in /chat endpoint")
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
