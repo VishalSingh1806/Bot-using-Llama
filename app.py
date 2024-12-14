@@ -164,9 +164,10 @@ llama_tokenizer = None
 def get_llama_model():
     global llama_model, llama_tokenizer
     if llama_model is None or llama_tokenizer is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Define the device
         llama_tokenizer = AutoTokenizer.from_pretrained(
             "meta-llama/Llama-2-7b-chat-hf",
-            use_auth_token=hf_token
+            token=hf_token  # Replace deprecated `use_auth_token` with `token`
         )
         llama_model = AutoModelForCausalLM.from_pretrained(
             "meta-llama/Llama-2-7b-chat-hf",
@@ -177,6 +178,11 @@ def get_llama_model():
         llama_model.eval()
     return llama_model, llama_tokenizer
 
+def convert_to_native(value):
+    """Convert numpy types to native Python types."""
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 # Suppress symlink warnings for Hugging Face cache (Windows-specific)
 import warnings
@@ -472,7 +478,7 @@ async def chat_endpoint(request: Request):
             learn_keywords_from_query(question)
             return {
                 "answer": refined_answer,
-                "confidence": confidence,
+                "confidence": convert_to_native(confidence),
                 "source": "database + llama refinement",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
@@ -488,9 +494,12 @@ async def chat_endpoint(request: Request):
             "response_time": f"{time.time() - start_time:.2f} seconds",
         }
 
-    except HTTPException as e:
+     except HTTPException as e:
         logger.warning(f"HTTP error: {e.detail}")
         raise e
+    except TypeError as te:
+        logger.error(f"Serialization error: {te}")
+        raise HTTPException(status_code=500, detail="Response serialization error.")
     except Exception as e:
         logger.exception("Unhandled error in /chat endpoint")
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
