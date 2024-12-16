@@ -101,10 +101,16 @@ FALLBACK_KB = {
 async def lifespan(app: FastAPI):
     """Handle application startup and shutdown."""
     logger.info("Application startup: Initializing resources.")
+    
+    # Test database connection and structure
+    logger.info("Testing database connection...")
+    test_db_connection()  # Call the test function here
+
     load_keywords_from_file()  # Load keywords during startup
     yield
     save_keywords_to_file()  # Save keywords during shutdown
     logger.info("Application shutdown: Cleaning up resources.")
+
 
 async def log_request_id(request: Request):
     request_id = str(uuid.uuid4())
@@ -418,6 +424,33 @@ async def general_exception_handler(request: Request, exc: Exception):
 async def health_check():
     """Check the health of the application."""
     return {"status": "ok"}
+
+def test_db_connection():
+    """Test database connection and structure."""
+    try:
+        # Attempt to connect to the database
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        # Check tables in the database
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = cursor.fetchall()
+        print("Tables in the database:", tables)
+
+        # Verify structure of the `ValidatedQA` table
+        if ("ValidatedQA",) in tables:
+            cursor.execute("PRAGMA table_info(ValidatedQA);")
+            columns = cursor.fetchall()
+            print("Columns in ValidatedQA table:", columns)
+        else:
+            print("ValidatedQA table not found in the database.")
+
+        conn.close()
+    except sqlite3.DatabaseError as e:
+        print("Database connection error:", e)
+    except Exception as ex:
+        print("Unexpected error:", ex)
+
 
 # Chat Endpoint
 @app.post("/chat")
