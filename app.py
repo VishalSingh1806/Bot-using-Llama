@@ -103,22 +103,40 @@ FALLBACK_KB = {
 # Define lifespan event handlers
 async def lifespan(app: FastAPI):
     """Handle application startup and shutdown."""
+    global llama_model, llama_tokenizer
+
     logger.info("Application startup: Initializing resources.")
-    
+
     # Test database connection and structure
     logger.info("Testing database connection...")
     test_db_connection()  # Call the test function here
+
+    # Load Sentence-BERT model (cached)
+    load_sentence_bert()
+
+    # Load LLaMA model and tokenizer
+    try:
+        llama_tokenizer = AutoTokenizer.from_pretrained(
+            "meta-llama/Llama-2-7b-chat-hf",
+            token=hf_token
+        )
+        llama_model = AutoModelForCausalLM.from_pretrained(
+            "meta-llama/Llama-2-7b-chat-hf",
+            device_map="auto",  # Automatically distribute across available GPUs
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True
+        )
+        llama_model.eval()
+        logger.info("LLaMA model and tokenizer loaded successfully during startup.")
+    except Exception as e:
+        logger.error(f"Failed to load LLaMA model and tokenizer during startup: {e}")
+        raise RuntimeError("Model loading failed during startup.")
 
     load_keywords_from_file()  # Load keywords during startup
     yield
     save_keywords_to_file()  # Save keywords during shutdown
     logger.info("Application shutdown: Cleaning up resources.")
 
-
-async def log_request_id(request: Request):
-    request_id = str(uuid.uuid4())
-    logger.info(f"Request ID: {request_id} - {request.method} {request.url}")
-    return request_id
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
@@ -166,34 +184,6 @@ def load_sentence_bert():
         logger.exception("Failed to load Sentence-BERT model")
         raise RuntimeError(f"Failed to load Sentence-BERT model: {e}")
 
-
-llama_model = None
-llama_tokenizer = None
-
-def get_llama_model():
-    global llama_model, llama_tokenizer
-    try:
-        if llama_model is None or llama_tokenizer is None:
-            llama_tokenizer = AutoTokenizer.from_pretrained(
-                "meta-llama/Llama-2-7b-chat-hf",
-                token=hf_token
-            )
-            # Distribute model across GPUs
-            llama_model = AutoModelForCausalLM.from_pretrained(
-                "meta-llama/Llama-2-7b-chat-hf",
-                device_map="auto",  # Automatically distribute across available GPUs
-                torch_dtype=torch.float16,
-                low_cpu_mem_usage=True
-            )
-            llama_model.eval()
-            logger.info("LLaMA model and tokenizer loaded across multiple devices.")
-        return llama_model, llama_tokenizer
-    except ImportError as e:
-        logger.error(f"Missing dependency: {e}. Ensure `accelerate` is installed.")
-        raise
-    except Exception as e:
-        logger.error(f"Failed to load LLaMA model: {e}")
-        raise
 
 def convert_to_native(value):
     """Convert numpy types to native Python types."""
@@ -391,8 +381,11 @@ def fuzzy_match_fallback(question: str) -> str:
 
 def refine_with_llama(question: str, db_answer: str) -> str:
     try:
-        llama_model, llama_tokenizer = get_llama_model()
-        
+        # Ensure the model and tokenizer are loaded
+        if llama_model is None or llama_tokenizer is None:
+            logger.error("LLaMA model or tokenizer not loaded.")
+            raise RuntimeError("LLaMA model or tokenizer is not initialized.")
+
         # Generate a dynamic prompt based on user input
         prompt = (
             f"Rephrase this information to directly answer the question:\n\n"
@@ -400,11 +393,11 @@ def refine_with_llama(question: str, db_answer: str) -> str:
             f"Answer: {db_answer}\n\n"
             "Provide a concise and direct response:"
         )
-        
+
         # Tokenize inputs and align them with the model's device
         inputs = llama_tokenizer(prompt, return_tensors="pt")
         inputs = {key: val.to(llama_model.device) for key, val in inputs.items()}  # Ensure all inputs are on the correct device
-        
+
         # Generate refined response
         outputs = llama_model.generate(
             **inputs,
@@ -423,6 +416,7 @@ def refine_with_llama(question: str, db_answer: str) -> str:
     except Exception as e:
         logger.exception("Error refining response with LLaMA")
         return db_answer  # Fallback to original database answer
+
 
 def build_memory_context(session_id):
     """Build context from session memory."""
