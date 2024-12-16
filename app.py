@@ -7,6 +7,8 @@ import torch
 from accelerate import infer_auto_device_map, init_empty_weights
 import sqlite3
 import numpy as np
+import spacy
+from spacy.lang.en.stop_words import STOP_WORDS
 from datetime import datetime, timedelta
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
@@ -37,6 +39,9 @@ CACHE_THRESHOLD = 0.9  # Minimum similarity for cache retrieval
 
 # Cache for dynamic query embeddings
 embedding_cache = {}
+
+# Load spaCy model globally during startup
+nlp = spacy.load("en_core_web_sm")
 
 # Define clean_expired_sessions before using it in the scheduler
 def clean_expired_sessions():
@@ -310,15 +315,27 @@ def load_keywords_from_file():
         DYNAMIC_KEYWORDS = DYNAMIC_KEYWORDS or set()
         keyword_frequency = keyword_frequency or defaultdict(int)
 
-def learn_keywords_from_query(question):
+def learn_keywords_from_query(question: str):
+    """Learn keywords from the user query using NLP."""
     global DYNAMIC_KEYWORDS, keyword_frequency
-    # Extract keywords from the query (can be a simple split or NLP-based extraction)
-    keywords = re.findall(r'\b\w+\b', question.lower())
+
+    # Process the question using spaCy
+    doc = nlp(question.lower())
+
+    # Extract nouns, proper nouns, and named entities as keywords
+    keywords = set()
+    for token in doc:
+        if token.pos_ in {"NOUN", "PROPN"} and token.text not in STOP_WORDS:
+            keywords.add(token.text)
+    for ent in doc.ents:
+        keywords.add(ent.text)
+
+    # Update the global dynamic keyword storage and frequency
     for keyword in keywords:
         DYNAMIC_KEYWORDS.add(keyword)
         keyword_frequency[keyword] += 1
-    logger.info(f"Learned keywords: {keywords}")
 
+    logger.info(f"Learned keywords: {keywords}")
 
 def save_keywords_to_file():
     """Save dynamic keywords to a file."""
