@@ -439,9 +439,6 @@ def adaptive_fuzzy_match(question: str, threshold=80) -> str:
 
 
 def enhanced_fallback_response(question: str, session_id: str) -> str:
-    """
-    Multi-tier fallback response system with adaptive matching and context scoring.
-    """
     try:
         # 1. Attempt fuzzy matching against the knowledge base
         response = adaptive_fuzzy_match(question)
@@ -456,8 +453,9 @@ def enhanced_fallback_response(question: str, session_id: str) -> str:
                 scorer=fuzz.ratio
             )
             if context_match and context_match[1] >= 70:  # Lower threshold for session context
-                logger.info(f"Context-based fallback match found: {context_match[0]}")
-                return f"I'm not sure, but here's something related: {context_match[0]}"
+                # Avoid self-repetition
+                if context_match[0] != question:
+                    return f"I'm not sure, but here's something related: {context_match[0]}"
 
         # 3. Provide a generic fallback response
         logger.info("Using generic fallback response.")
@@ -465,6 +463,7 @@ def enhanced_fallback_response(question: str, session_id: str) -> str:
     except Exception as e:
         logger.exception("Error during enhanced fallback response generation.")
         return "I encountered an issue while finding the best response. Please try again."
+
 
 
 def refine_with_llama(question: str, db_answer: str) -> str:
