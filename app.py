@@ -35,6 +35,9 @@ keyword_frequency = defaultdict(int)  # Defaultdict to track keyword frequency
 CACHE = {}
 CACHE_THRESHOLD = 0.9  # Minimum similarity for cache retrieval
 
+# Cache for dynamic query embeddings
+embedding_cache = {}
+
 # Define clean_expired_sessions before using it in the scheduler
 def clean_expired_sessions():
     """Clean expired sessions based on the SESSION_TIMEOUT."""
@@ -103,7 +106,7 @@ FALLBACK_KB = {
 # Define lifespan event handlers
 async def lifespan(app: FastAPI):
     """Handle application startup and shutdown."""
-    global llama_model, llama_tokenizer
+    global llama_model, llama_tokenizer, reference_embeddings
 
     logger.info("Application startup: Initializing resources.")
 
@@ -113,6 +116,19 @@ async def lifespan(app: FastAPI):
 
     # Load Sentence-BERT model (cached)
     load_sentence_bert()
+
+    # Precompute static embeddings for reference queries
+    try:
+        reference_queries = [
+            "What is EPR?",
+            "Explain plastic waste management.",
+            "What are EPR compliance rules?",
+            "How do I register for EPR compliance?"
+        ]
+        reference_embeddings = np.vstack([compute_embedding(q) for q in reference_queries])
+        logger.info("Static embeddings precomputed for reference queries.")
+    except Exception as e:
+        logger.error(f"Failed to precompute reference embeddings: {e}")
 
     # Load LLaMA model and tokenizer
     try:
@@ -136,7 +152,6 @@ async def lifespan(app: FastAPI):
     yield
     save_keywords_to_file()  # Save keywords during shutdown
     logger.info("Application shutdown: Cleaning up resources.")
-
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
@@ -228,8 +243,15 @@ def connect_db():
 def compute_embedding(text: str):
     """Compute embedding for a given text using Sentence-BERT."""
     try:
+        # Check cache for the embedding
+        if text in embedding_cache:
+            logger.info(f"Using cached embedding for text: {text}")
+            return embedding_cache[text]
+
+        # Compute new embedding if not cached
         model = load_sentence_bert()
         embedding = model.encode(text).reshape(1, -1)
+        embedding_cache[text] = embedding  # Cache the computed embedding
         logger.info(f"Computed embedding for text: {text}")
         return embedding
     except Exception as e:
@@ -246,11 +268,13 @@ reference_queries = [
 reference_embeddings = np.vstack([compute_embedding(q) for q in reference_queries])
 
 
-def is_query_relevant(query: str, reference_embeddings: np.ndarray, threshold: float = 0.7) -> bool:
+def is_query_relevant(query: str, threshold: float = 0.7) -> bool:
     """Determine if a query is relevant to EPR using semantic similarity."""
+    global reference_embeddings  # Use precomputed embeddings
     try:
         # Compute query embedding
         query_embedding = compute_embedding(query)
+
         # Compare with reference embeddings
         similarities = cosine_similarity(query_embedding, reference_embeddings)
         max_similarity = max(similarities[0])  # Get the highest similarity score
@@ -259,6 +283,7 @@ def is_query_relevant(query: str, reference_embeddings: np.ndarray, threshold: f
     except Exception as e:
         logger.exception("Error in is_query_relevant")
         raise
+
         
 
 def load_keywords_from_file():
@@ -478,6 +503,7 @@ def cache_lookup(query_embedding):
     best_answer = None
 
     for cached_question, (cached_embedding, cached_answer) in CACHE.items():
+        # Reuse cached embeddings
         similarity = cosine_similarity(query_embedding, cached_embedding)[0][0]
         if similarity > max_similarity:
             max_similarity = similarity
