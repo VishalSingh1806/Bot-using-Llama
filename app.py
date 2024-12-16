@@ -468,36 +468,46 @@ def enhanced_fallback_response(question: str, session_id: str) -> str:
 
 
 def refine_with_llama(question: str, db_answer: str) -> str:
+    """
+    Refine the database answer using the LLaMA model to provide a concise and direct response.
+    """
     try:
         # Ensure the model and tokenizer are loaded
         if llama_model is None or llama_tokenizer is None:
             logger.error("LLaMA model or tokenizer not loaded.")
             raise RuntimeError("LLaMA model or tokenizer is not initialized.")
 
-        # Generate a dynamic prompt based on user input
+        # Generate a concise rephrased response
         prompt = (
-            f"Rephrase this information to directly answer the question:\n\n"
-            f"Question: {question}\n\n"
+            f"Provide a concise and direct answer to the following question:\n\n"
+            f"Question: {question}\n"
             f"Answer: {db_answer}\n\n"
-            "Provide a concise and direct response:"
+            "Rephrased Response:"
         )
 
         # Tokenize inputs and align them with the model's device
         inputs = llama_tokenizer(prompt, return_tensors="pt")
-        inputs = {key: val.to(llama_model.device) for key, val in inputs.items()}  # Ensure all inputs are on the correct device
+        inputs = {key: val.to(llama_model.device) for key, val in inputs.items()}
 
-        # Generate refined response
+        # Generate the refined response
         outputs = llama_model.generate(
             **inputs,
-            max_new_tokens=140,
+            max_new_tokens=100,  # Limit the response length
             do_sample=True,
             top_k=50,
             temperature=0.7
         )
-        # Decode and return only the response part
+
+        # Decode and clean the response
         refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+
+        # Extract only the rephrased response
+        if "Rephrased Response:" in refined_response:
+            refined_response = refined_response.split("Rephrased Response:")[-1].strip()
+
         logger.info("LLaMA refinement successful.")
         return refined_response
+
     except RuntimeError as e:
         logger.error(f"Runtime error during LLaMA refinement: {e}")
         return db_answer  # Fallback to original database answer
