@@ -203,7 +203,7 @@ DB_PATH = os.path.join(CURRENT_DIR, "knowledge_base.db")
 app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
 
 # Hugging Face token
-hf_token = "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"
+hf_token = "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"
 
 # Serve `index.html` for root route
 @app.get("/")
