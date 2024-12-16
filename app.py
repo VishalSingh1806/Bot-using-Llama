@@ -307,35 +307,42 @@ def query_validated_qa(user_embedding, question: str):
     try:
         conn = connect_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT question, answer, embedding FROM ValidatedQA")
+        cursor.execute("SELECT question, answer, question_embedding, answer_embedding FROM ValidatedQA")
 
         max_similarity = 0.0
-        best_answer = None
+        best_match = None
+        best_source = None
 
         for row in cursor.fetchall():
-            db_question, db_answer, db_embedding = row
-            db_embedding_array = np.frombuffer(db_embedding, dtype=np.float32).reshape(1, -1)
+            db_question, db_answer, question_embedding, answer_embedding = row
+            question_vector = np.frombuffer(question_embedding, dtype=np.float32).reshape(1, -1)
+            answer_vector = np.frombuffer(answer_embedding, dtype=np.float32).reshape(1, -1)
 
-            # Compute similarity
-            similarity = cosine_similarity(user_embedding, db_embedding_array)[0][0]
-            logger.debug(f"Similarity for '{question}' with '{db_question}': {similarity}")
+            # Compute similarities
+            question_similarity = cosine_similarity(user_embedding, question_vector)[0][0]
+            answer_similarity = cosine_similarity(user_embedding, answer_vector)[0][0]
 
             # Check for the best match
-            if similarity > max_similarity:
-                max_similarity = similarity
-                best_answer = db_answer
+            if question_similarity > max_similarity:
+                max_similarity = question_similarity
+                best_match = db_answer  # Always return the answer
+                best_source = "question"
+            if answer_similarity > max_similarity:
+                max_similarity = answer_similarity
+                best_match = db_answer
+                best_source = "answer"
 
         conn.close()
 
-        if max_similarity >= 0.7:
-            logger.info(f"Best match found with confidence {max_similarity}: {best_answer}")
-            return best_answer, max_similarity
+        if max_similarity >= 0.7:  # Confidence threshold
+            logger.info(f"Best match found with confidence {max_similarity}: {best_match} (source: {best_source})")
+            return best_match, max_similarity, best_source
 
         logger.info(f"No relevant match found for query: {question}")
-        return None, 0.0
+        return None, 0.0, None
     except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
-        return None, 0.0
+        return None, 0.0, None
 
 def fuzzy_match_fallback(question: str) -> str:
     """Use rapidfuzz to find the closest fallback response."""
@@ -465,21 +472,18 @@ async def chat_endpoint(request: Request):
             }
 
         # Step 3: Check query relevance using embeddings
-        memory_context = build_memory_context(session_id)
-        full_query = f"{memory_context} User: {question}" if memory_context else question
-        user_embedding = compute_embedding(full_query)
+        user_embedding = compute_embedding(question)
+        db_answer, confidence, source = query_validated_qa(user_embedding, question)
 
-        db_answer, confidence = query_validated_qa(user_embedding, question)
-
-        if db_answer and confidence >= 0.7:  # Lowered threshold
-            logger.info(f"Database response found for query: {question} with confidence {confidence}")
+        if db_answer and confidence >= 0.7:  # Confidence threshold
+            logger.info(f"Database response found for query: {question} with confidence {confidence} from {source}")
             refined_answer = refine_with_llama(question, db_answer)
             session_memory[session_id][-1]["response"] = refined_answer
             learn_keywords_from_query(question)
             return {
                 "answer": refined_answer,
                 "confidence": convert_to_native(confidence),
-                "source": "database + llama refinement",
+                "source": source,
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
@@ -494,12 +498,12 @@ async def chat_endpoint(request: Request):
             "response_time": f"{time.time() - start_time:.2f} seconds",
         }
 
-     except HTTPException as e:
+    except HTTPException as e:
         logger.warning(f"HTTP error: {e.detail}")
         raise e
-     except TypeError as te:
+    except TypeError as te:
         logger.error(f"Serialization error: {te}")
         raise HTTPException(status_code=500, detail="Response serialization error.")
-     except Exception as e:
+    except Exception as e:
         logger.exception("Unhandled error in /chat endpoint")
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
