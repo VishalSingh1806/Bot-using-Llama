@@ -535,7 +535,7 @@ async def chat_endpoint(request: Request):
             logger.info(f"Cache hit: Returning cached answer with similarity {cached_similarity}")
             return {
                 "answer": cached_answer,
-                "confidence": cached_similarity,
+                "confidence": flot(cached_similarity),
                 "source": "cache",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
