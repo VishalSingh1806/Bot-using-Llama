@@ -7,7 +7,6 @@ import torch
 from accelerate import infer_auto_device_map, init_empty_weights
 import sqlite3
 import numpy as np
-import faiss
 import spacy
 from spacy.lang.en.stop_words import STOP_WORDS
 from datetime import datetime, timedelta
@@ -113,82 +112,53 @@ FALLBACK_KB = {
 
 # Define lifespan event handlers
 async def lifespan(app: FastAPI):
-    """
-    Handle application startup and shutdown. Initialize resources like FAISS index,
-    models, dynamic keywords, and database connections during startup.
-    """
-    global faiss_index, id_to_question_answer, llama_model, llama_tokenizer, reference_embeddings
+    """Handle application startup and shutdown."""
+    global llama_model, llama_tokenizer, reference_embeddings
 
-    logger.info("Application startup: Initializing resources...")
+    logger.info("Application startup: Initializing resources.")
 
+    # Test database connection and structure
+    logger.info("Testing database connection...")
+    test_db_connection()  # Call the test function here
+
+    # Load Sentence-BERT model (cached)
+    load_sentence_bert()
+
+    # Precompute static embeddings for reference queries
     try:
-        # Step 1: Test database connection
-        logger.info("Testing database connection...")
-        test_db_connection()
-
-        # Step 2: Load Sentence-BERT model
-        logger.info("Loading Sentence-BERT model...")
-        load_sentence_bert()
-
-        # Step 3: Precompute static reference embeddings for context queries
-        try:
-            logger.info("Precomputing reference embeddings...")
-            reference_queries = [
-                "What is EPR?",
-                "Explain plastic waste management.",
-                "What are EPR compliance rules?",
-                "How do I register for EPR compliance?"
-            ]
-            reference_embeddings = np.vstack([compute_embedding(q) for q in reference_queries])
-            logger.info("Static embeddings precomputed successfully.")
-        except Exception as e:
-            logger.error(f"Failed to precompute reference embeddings: {e}")
-
-        # Step 4: Initialize FAISS index
-        logger.info("Initializing FAISS index...")
-        initialize_faiss_index()
-
-        # Step 5: Load LLaMA model and tokenizer
-        try:
-            logger.info("Loading LLaMA model and tokenizer...")
-            llama_tokenizer = AutoTokenizer.from_pretrained(
-                "meta-llama/Llama-2-7b-chat-hf",
-                token=hf_token
-            )
-            llama_model = AutoModelForCausalLM.from_pretrained(
-                "meta-llama/Llama-2-7b-chat-hf",
-                device_map="auto",  # Automatically distribute across available GPUs
-                torch_dtype=torch.float16,
-                low_cpu_mem_usage=True
-            )
-            llama_model.eval()
-            logger.info("LLaMA model and tokenizer loaded successfully.")
-        except Exception as e:
-            logger.error(f"Failed to load LLaMA model and tokenizer: {e}")
-            raise RuntimeError("Model loading failed during startup.")
-
-        # Step 6: Load dynamic keywords from file
-        logger.info("Loading dynamic keywords from file...")
-        load_keywords_from_file()
-
+        reference_queries = [
+            "What is EPR?",
+            "Explain plastic waste management.",
+            "What are EPR compliance rules?",
+            "How do I register for EPR compliance?"
+        ]
+        reference_embeddings = np.vstack([compute_embedding(q) for q in reference_queries])
+        logger.info("Static embeddings precomputed for reference queries.")
     except Exception as e:
-        logger.exception("Error during application startup. Shutting down...")
-        raise RuntimeError("Application startup failed due to resource initialization errors.")
+        logger.error(f"Failed to precompute reference embeddings: {e}")
 
-    # On shutdown, perform cleanup tasks
+    # Load LLaMA model and tokenizer
     try:
-        yield
-    finally:
-        # Save dynamic keywords to file
-        try:
-            logger.info("Saving dynamic keywords to file...")
-            save_keywords_to_file()
-        except Exception as e:
-            logger.error(f"Error saving dynamic keywords during shutdown: {e}")
+        llama_tokenizer = AutoTokenizer.from_pretrained(
+            "meta-llama/Llama-2-7b-chat-hf",
+            token=hf_token
+        )
+        llama_model = AutoModelForCausalLM.from_pretrained(
+            "meta-llama/Llama-2-7b-chat-hf",
+            device_map="auto",  # Automatically distribute across available GPUs
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True
+        )
+        llama_model.eval()
+        logger.info("LLaMA model and tokenizer loaded successfully during startup.")
+    except Exception as e:
+        logger.error(f"Failed to load LLaMA model and tokenizer during startup: {e}")
+        raise RuntimeError("Model loading failed during startup.")
 
-        # Additional cleanup can be added here if needed
-        logger.info("Application shutdown: Resources cleaned up.")
-
+    load_keywords_from_file()  # Load keywords during startup
+    yield
+    save_keywords_to_file()  # Save keywords during shutdown
+    logger.info("Application shutdown: Cleaning up resources.")
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
@@ -203,7 +173,7 @@ DB_PATH = os.path.join(CURRENT_DIR, "knowledge_base.db")
 app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
 
 # Hugging Face token
-hf_token = "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"
+hf_token = "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"
 
 # Serve `index.html` for root route
 @app.get("/")
@@ -235,34 +205,6 @@ def load_sentence_bert():
     except Exception as e:
         logger.exception("Failed to load Sentence-BERT model")
         raise RuntimeError(f"Failed to load Sentence-BERT model: {e}")
-
-# Initialize FAISS index
-def initialize_faiss_index():
-    """
-    Initialize FAISS index with embeddings from the database.
-    """
-    global faiss_index, id_to_question_answer
-
-    embedding_dim = 384  # Adjust this based on your Sentence-BERT model
-    faiss_index = faiss.IndexFlatL2(embedding_dim)
-    id_to_question_answer = {}
-
-    conn = connect_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, question, answer, question_embedding FROM ValidatedQA")
-
-    all_embeddings = []
-    for row in cursor.fetchall():
-        question_id, question, answer, embedding_blob = row
-        embedding_vector = np.frombuffer(embedding_blob, dtype=np.float32)
-        all_embeddings.append(embedding_vector)
-        id_to_question_answer[question_id] = {"question": question, "answer": answer}
-
-    if all_embeddings:
-        faiss_index.add(np.array(all_embeddings, dtype=np.float32))
-
-    conn.close()
-    logger.info(f"FAISS index initialized with {len(all_embeddings)} embeddings.")
 
 
 def convert_to_native(value):
@@ -411,37 +353,34 @@ def save_keywords_to_file():
         logger.error(f"Failed to save keywords to file: {e}")
 
 
-def query_validated_qa(user_embedding, question: str, top_k: int = 5):
-    """Query the FAISS index for the closest match."""
+def query_validated_qa(user_embedding, question: str):
+    """Query the ValidatedQA table for the best match."""
     try:
-        if faiss_index is None:
-            logger.error("FAISS index is not initialized.")
-            raise RuntimeError("FAISS index is not ready for queries.")
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA")
 
-        # Perform FAISS search
-        distances, indices = faiss_index.search(user_embedding, top_k)
+        max_similarity = 0.0
+        best_match = None
 
-        # Retrieve the best match
-        best_match_id = indices[0][0]
-        if best_match_id == -1:  # No match found
-            logger.info(f"No FAISS match found for query: {question}")
-            return None, 0.0, None
+        for row in cursor.fetchall():
+            question_vector = np.frombuffer(row[2], dtype=np.float32).reshape(1, -1)
+            similarity = cosine_similarity(user_embedding, question_vector)[0][0]
+            if similarity > max_similarity:
+                max_similarity = similarity
+                best_match = row[1]  # Answer
 
-        # Retrieve question-answer pair using the ID
-        best_match = id_to_question_answer.get(best_match_id, None)
-        max_similarity = 1 - distances[0][0]  # Convert L2 distance to cosine similarity
+        conn.close()
 
         if best_match:
-            logger.info(f"FAISS match found with similarity: {max_similarity}")
-            return best_match["answer"], max_similarity, "database"
+            logger.debug(f"Database match found with similarity {max_similarity:.2f}")
+        else:
+            logger.debug("No database match found for the query.")
 
-        logger.info(f"No valid match found for query: {question}")
+        return best_match, max_similarity, "database"  # Always return source
+    except sqlite3.Error as e:
+        logger.error(f"Database query error: {e}")
         return None, 0.0, None
-
-    except Exception as e:
-        logger.exception("Error querying FAISS index.")
-        return None, 0.0, None
-
 
 
 def fuzzy_match_fallback(question: str) -> str:
