@@ -389,13 +389,22 @@ def fuzzy_match_fallback(question: str) -> str:
 def refine_with_llama(question: str, db_answer: str):
     try:
         llama_model, llama_tokenizer = get_llama_model()
+        
+        # Ensure all inputs are on the correct device
+        device = llama_model.device
         prompt = (
             "Rephrase this information to directly answer the question:\n\n"
             f"Question: {question}\n\n"
             f"Answer: {db_answer}\n\n"
             "Provide a concise and direct response:"
         )
-        inputs = llama_tokenizer(prompt, return_tensors="pt").to(llama_model.device)
+        inputs = llama_tokenizer(prompt, return_tensors="pt").to(device)
+        
+        # Ensure position IDs are on the same device as the model
+        position_ids = torch.arange(inputs['input_ids'].size(-1), device=device).unsqueeze(0)
+        inputs['position_ids'] = position_ids
+
+        # Generate refined response
         outputs = llama_model.generate(
             **inputs,
             max_new_tokens=140,
@@ -406,12 +415,13 @@ def refine_with_llama(question: str, db_answer: str):
         refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
         logger.info("LLaMA refinement successful.")
         return refined_response
-    except ImportError as e:
-        logger.error(f"LLaMA refinement failed due to missing dependency: {e}")
+    except RuntimeError as e:
+        logger.error(f"Runtime error during LLaMA refinement: {e}")
         return db_answer  # Fallback to the original answer
     except Exception as e:
         logger.exception("Error refining response with LLaMA")
         return db_answer  # Fallback to the original answer
+
 
 def build_memory_context(session_id):
     """Build context from session memory."""
