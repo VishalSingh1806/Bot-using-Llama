@@ -407,6 +407,66 @@ def fuzzy_match_fallback(question: str) -> str:
         logger.exception("Error during fuzzy matching")
         return None
 
+def adaptive_fuzzy_match(question: str, threshold=80) -> str:
+    """
+    Adaptive fuzzy match with context-based adjustments.
+    Dynamically adjusts thresholds based on query complexity and context.
+    """
+    try:
+        # Analyze query complexity (e.g., length, presence of keywords)
+        query_length = len(question.split())
+        contains_keywords = any(keyword in question.lower() for keyword in DYNAMIC_KEYWORDS)
+        adjusted_threshold = threshold - 10 if contains_keywords else threshold
+
+        # Attempt fuzzy matching against the knowledge base
+        result = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
+        if result:
+            match, score = result[0], result[1]
+            logger.info(f"Fuzzy match attempt: '{match}' with score {score}")
+
+            # Use dynamic threshold for acceptance
+            if score >= adjusted_threshold:
+                logger.info(f"Fuzzy match accepted: {match} with score {score}")
+                return FALLBACK_KB[match]
+            else:
+                logger.warning(f"Low confidence fuzzy match: {match} with score {score}")
+        else:
+            logger.info("No suitable fuzzy match found.")
+        return None
+    except Exception as e:
+        logger.exception("Error during adaptive fuzzy matching.")
+        return None
+
+
+def enhanced_fallback_response(question: str, session_id: str) -> str:
+    """
+    Multi-tier fallback response system with adaptive matching and context scoring.
+    """
+    try:
+        # 1. Attempt fuzzy matching against the knowledge base
+        response = adaptive_fuzzy_match(question)
+        if response:
+            return response
+
+        # 2. Check recent session memory for context-based matching
+        if session_id in session_memory and session_memory[session_id]:
+            context_match = process.extractOne(
+                question,
+                [interaction["query"] for interaction in session_memory[session_id]],
+                scorer=fuzz.ratio
+            )
+            if context_match and context_match[1] >= 70:  # Lower threshold for session context
+                logger.info(f"Context-based fallback match found: {context_match[0]}")
+                return f"I'm not sure, but here's something related: {context_match[0]}"
+
+        # 3. Provide a generic fallback response
+        logger.info("Using generic fallback response.")
+        return "I'm sorry, I couldn't find relevant information. Could you rephrase or ask something else?"
+    except Exception as e:
+        logger.exception("Error during enhanced fallback response generation.")
+        return "I encountered an issue while finding the best response. Please try again."
+
+
 def refine_with_llama(question: str, db_answer: str) -> str:
     try:
         # Ensure the model and tokenizer are loaded
@@ -620,10 +680,10 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 5: Fallback Response for No Database Match
-        fallback_response = fuzzy_match_fallback(question) or "I couldn't find relevant information."
-        logger.info(f"Fallback response used for session {session_id}.")
-        
+        # Step 5: Enhanced Fallback Response
+        fallback_response = enhanced_fallback_response(question, session_id)
+        logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
+
         # Update cache with fallback response
         CACHE[question] = (user_embedding, fallback_response)
 
