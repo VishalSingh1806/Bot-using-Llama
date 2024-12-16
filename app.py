@@ -389,11 +389,11 @@ def fuzzy_match_fallback(question: str) -> str:
         logger.exception("Error during fuzzy matching")
         return None
 
-def refine_with_llama(question: str, db_answer: str):
+def refine_with_llama(question: str, db_answer: str) -> str:
     try:
         llama_model, llama_tokenizer = get_llama_model()
         
-        # Generate a dynamic prompt based on user query
+        # Generate a dynamic prompt based on user input
         prompt = (
             f"Rephrase this information to directly answer the question:\n\n"
             f"Question: {question}\n\n"
@@ -401,9 +401,9 @@ def refine_with_llama(question: str, db_answer: str):
             "Provide a concise and direct response:"
         )
         
-        # Tokenize and align inputs with the model's device
+        # Tokenize inputs and align them with the model's device
         inputs = llama_tokenizer(prompt, return_tensors="pt")
-        inputs = {key: val.to(llama_model.device) for key, val in inputs.items()}  # Ensure inputs are on the right device
+        inputs = {key: val.to(llama_model.device) for key, val in inputs.items()}  # Ensure all inputs are on the correct device
         
         # Generate refined response
         outputs = llama_model.generate(
@@ -413,17 +413,16 @@ def refine_with_llama(question: str, db_answer: str):
             top_k=50,
             temperature=0.7
         )
+        # Decode and return only the response part
         refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
         logger.info("LLaMA refinement successful.")
-        
-        # Return the refined response
         return refined_response
     except RuntimeError as e:
         logger.error(f"Runtime error during LLaMA refinement: {e}")
-        return db_answer  # Fallback to the original answer in case of an error
+        return db_answer  # Fallback to original database answer
     except Exception as e:
         logger.exception("Error refining response with LLaMA")
-        return db_answer  # Fallback to the original answer
+        return db_answer  # Fallback to original database answer
 
 def build_memory_context(session_id):
     """Build context from session memory."""
