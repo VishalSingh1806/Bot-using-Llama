@@ -493,6 +493,7 @@ def cache_lookup(query_embedding):
     return best_answer, max_similarity
 
 # Chat Endpoint
+@app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
         start_time = time.time()
