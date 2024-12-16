@@ -393,17 +393,17 @@ def refine_with_llama(question: str, db_answer: str):
     try:
         llama_model, llama_tokenizer = get_llama_model()
         
-        # Generate prompt
+        # Generate a dynamic prompt based on user query
         prompt = (
-            "Rephrase this information to directly answer the question:\n\n"
+            f"Rephrase this information to directly answer the question:\n\n"
             f"Question: {question}\n\n"
             f"Answer: {db_answer}\n\n"
             "Provide a concise and direct response:"
         )
         
-        # Tokenize and align inputs with the model's first device
+        # Tokenize and align inputs with the model's device
         inputs = llama_tokenizer(prompt, return_tensors="pt")
-        inputs = {key: val.to(llama_model.device) for key, val in inputs.items()}  # Align inputs to the model's device
+        inputs = {key: val.to(llama_model.device) for key, val in inputs.items()}  # Ensure inputs are on the right device
         
         # Generate refined response
         outputs = llama_model.generate(
@@ -415,15 +415,15 @@ def refine_with_llama(question: str, db_answer: str):
         )
         refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
         logger.info("LLaMA refinement successful.")
+        
+        # Return the refined response
         return refined_response
     except RuntimeError as e:
         logger.error(f"Runtime error during LLaMA refinement: {e}")
-        return db_answer  # Fallback to the original answer
+        return db_answer  # Fallback to the original answer in case of an error
     except Exception as e:
         logger.exception("Error refining response with LLaMA")
         return db_answer  # Fallback to the original answer
-
-
 
 def build_memory_context(session_id):
     """Build context from session memory."""
