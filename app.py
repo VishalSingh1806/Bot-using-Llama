@@ -465,10 +465,10 @@ def enhanced_fallback_response(question: str, session_id: str) -> str:
         return "I encountered an issue while finding the best response. Please try again."
 
 
-
 def refine_with_llama(question: str, db_answer: str) -> str:
     """
     Refine the database answer using the LLaMA model to provide a concise and direct response.
+    Explicitly define EPR as Extended Producer Responsibility for better contextual understanding.
     """
     try:
         # Ensure the model and tokenizer are loaded
@@ -476,9 +476,15 @@ def refine_with_llama(question: str, db_answer: str) -> str:
             logger.error("LLaMA model or tokenizer not loaded.")
             raise RuntimeError("LLaMA model or tokenizer is not initialized.")
 
+        # Explicitly define EPR in the prompt
+        epr_definition = (
+            "EPR stands for Extended Producer Responsibility, which is a policy approach where producers are responsible "
+            "for the treatment or disposal of post-consumer products. It focuses on plastic waste management and compliance rules."
+        )
+
         # Generate a concise rephrased response
         prompt = (
-            f"Provide a concise and direct answer to the following question:\n\n"
+            f"{epr_definition}\n\n"
             f"Question: {question}\n"
             f"Answer: {db_answer}\n\n"
             "Rephrased Response:"
