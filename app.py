@@ -358,7 +358,7 @@ def query_validated_qa(user_embedding, question: str):
     try:
         conn = connect_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT question, answer, question_embedding, answer_embedding FROM ValidatedQA")
+        cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA")
 
         max_similarity = 0.0
         best_match = None
@@ -377,11 +377,10 @@ def query_validated_qa(user_embedding, question: str):
         else:
             logger.debug("No database match found for the query.")
 
-        return best_match, max_similarity
+        return best_match, max_similarity, "database"  # Always return source
     except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
-        return None, 0.0
-
+        return None, 0.0, None
 
 
 def fuzzy_match_fallback(question: str) -> str:
