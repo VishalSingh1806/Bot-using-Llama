@@ -512,9 +512,21 @@ async def chat_endpoint(request: Request):
         user_embedding = compute_embedding(question)
         db_answer, confidence, source = query_validated_qa(user_embedding, question)
 
-        if db_answer and confidence >= 0.5:  # Confidence threshold
+        if db_answer and confidence >= 0.5:  # Adjusted threshold
             logger.info(f"Database response found for query: {question} with confidence {confidence} from {source}")
-            refined_answer = refine_with_llama(question, db_answer)
+
+            # Refine the response with LLaMA
+            try:
+                refined_answer = refine_with_llama(question, db_answer)
+                if refined_answer:
+                    logger.info("LLaMA refinement successful")
+                else:
+                    logger.warning("LLaMA returned an empty response. Using the original answer.")
+                    refined_answer = db_answer
+            except Exception as llama_error:
+                logger.exception(f"LLaMA refinement failed: {llama_error}")
+                refined_answer = db_answer
+
             session_memory[session_id][-1]["response"] = refined_answer
             learn_keywords_from_query(question)
             return {
