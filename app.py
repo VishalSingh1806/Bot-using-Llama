@@ -72,15 +72,17 @@ scheduler.add_job(clean_expired_sessions, 'interval', hours=1)
 scheduler.start()
 
 # Configure logging
+LOG_LEVEL = logging.INFO  # Set to DEBUG for detailed logs in development
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("app_log.log"),  # Log to a file
-        logging.StreamHandler()  # Log to the console
+        logging.FileHandler("app_log.log"),
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger("EPR_Chatbot")
+
 
 # Predefined openings
 OPENINGS = {
@@ -360,41 +362,26 @@ def query_validated_qa(user_embedding, question: str):
 
         max_similarity = 0.0
         best_match = None
-        best_source = None
 
         for row in cursor.fetchall():
-            db_question, db_answer, question_embedding, answer_embedding = row
-            question_vector = np.frombuffer(question_embedding, dtype=np.float32).reshape(1, -1)
-            answer_vector = np.frombuffer(answer_embedding, dtype=np.float32).reshape(1, -1)
-
-            # Compute similarities
-            question_similarity = cosine_similarity(user_embedding, question_vector)[0][0]
-            answer_similarity = cosine_similarity(user_embedding, answer_vector)[0][0]
-
-            logger.info(f"Similarity with question: {db_question} -> {question_similarity}")
-            logger.info(f"Similarity with answer: {db_answer} -> {answer_similarity}")
-
-            # Check for the best match
-            if question_similarity > max_similarity:
-                max_similarity = question_similarity
-                best_match = db_answer  # Always return the answer
-                best_source = "question"
-            if answer_similarity > max_similarity:
-                max_similarity = answer_similarity
-                best_match = db_answer
-                best_source = "answer"
+            question_vector = np.frombuffer(row[2], dtype=np.float32).reshape(1, -1)
+            similarity = cosine_similarity(user_embedding, question_vector)[0][0]
+            if similarity > max_similarity:
+                max_similarity = similarity
+                best_match = row[1]  # Answer
 
         conn.close()
 
-        if max_similarity >= 0.5:  # Relaxed threshold
-            logger.info(f"Best match found with confidence {max_similarity}: {best_match} (source: {best_source})")
-            return best_match, max_similarity, best_source
+        if best_match:
+            logger.debug(f"Database match found with similarity {max_similarity:.2f}")
+        else:
+            logger.debug("No database match found for the query.")
 
-        logger.info(f"No relevant match found for query: {question}")
-        return None, 0.0, None
+        return best_match, max_similarity
     except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
-        return None, 0.0, None
+        return None, 0.0
+
 
 
 def fuzzy_match_fallback(question: str) -> str:
@@ -520,13 +507,18 @@ def cache_lookup(query_embedding):
     best_answer = None
 
     for cached_question, (cached_embedding, cached_answer) in CACHE.items():
-        # Reuse cached embeddings
         similarity = cosine_similarity(query_embedding, cached_embedding)[0][0]
         if similarity > max_similarity:
             max_similarity = similarity
             best_answer = cached_answer
 
+    if best_answer:
+        logger.debug(f"Cache hit with similarity {max_similarity:.2f}")
+    else:
+        logger.debug("Cache miss for the query.")
+
     return best_answer, max_similarity
+
 
 # Chat Endpoint
 @app.post("/chat")
@@ -540,35 +532,34 @@ async def chat_endpoint(request: Request):
         session_id = data.get("session_id", "default")
 
         if not question:
-            logger.warning("Received empty message")
+            logger.warning("Received an empty message.")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Log new session creation
+        # Log session creation only when a new session is initialized
         if session_id not in session_memory:
-            logger.info(f"New session created: {session_id}")
+            logger.info(f"New session initialized: {session_id}")
 
-        # Step 1: Add the current query to session memory
+        # Step 1: Add the query to session memory with a placeholder response
         session_memory[session_id].append({
             "query": question,
             "response": "Processing...",
             "timestamp": datetime.now()
         })
 
-        # Limit memory size
+        # Limit memory to the last 5 interactions to manage memory efficiently
         if len(session_memory[session_id]) > 5:
             session_memory[session_id].pop(0)
 
-        # Load keywords dynamically
+        # Load dynamic keywords (no logging here to avoid repetitive logs)
         load_keywords_from_file()
 
         # Step 2: Compute query embedding
         user_embedding = compute_embedding(question)
 
-        # Step 3: Check cache for a similar query
+        # Step 3: Cache Lookup
         cached_answer, cached_similarity = cache_lookup(user_embedding)
-
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
-            logger.info(f"Cache hit: Returning cached answer with similarity {cached_similarity}")
+            logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
             return {
                 "answer": cached_answer,
                 "confidence": float(cached_similarity),
@@ -576,44 +567,46 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 4: Search the database for the best match
+        # Step 4: Database Search for Best Match
         db_answer, confidence, source = query_validated_qa(user_embedding, question)
 
-        if db_answer and confidence >= 0.5:  # Adjusted threshold
-            logger.info(f"Database response found for query: {question} with confidence {confidence} from {source}")
+        if db_answer and confidence >= 0.5:  # Database confidence threshold
+            logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
 
             # Refine the response with LLaMA
             try:
                 refined_answer = refine_with_llama(question, db_answer)
-                if refined_answer:
-                    logger.info("LLaMA refinement successful")
-                else:
-                    logger.warning("LLaMA returned an empty response. Using the original answer.")
+                if not refined_answer:
+                    logger.warning(f"LLaMA returned an empty response for session {session_id}. Using database answer.")
                     refined_answer = db_answer
             except Exception as llama_error:
-                logger.exception(f"LLaMA refinement failed: {llama_error}")
+                logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
                 refined_answer = db_answer
 
-            # Update cache with the new response
+            # Update cache with refined answer
             CACHE[question] = (user_embedding, refined_answer)
 
+            # Update session memory with the final response
             session_memory[session_id][-1]["response"] = refined_answer
             learn_keywords_from_query(question)
             return {
-                "answer": refined_answer,  # Only returning the refined answer
+                "answer": refined_answer,
                 "confidence": float(confidence),
                 "source": source,
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 5: Fallback for no relevant database match
+        # Step 5: Fallback Response for No Database Match
         fallback_response = fuzzy_match_fallback(question) or "I couldn't find relevant information."
-        session_memory[session_id][-1]["response"] = fallback_response
-
-        # Update cache with the fallback response
+        logger.info(f"Fallback response used for session {session_id}.")
+        
+        # Update cache with fallback response
         CACHE[question] = (user_embedding, fallback_response)
 
+        # Update session memory with fallback response
+        session_memory[session_id][-1]["response"] = fallback_response
         learn_keywords_from_query(question)
+
         return {
             "answer": fallback_response,
             "confidence": 0.5,
@@ -622,11 +615,11 @@ async def chat_endpoint(request: Request):
         }
 
     except HTTPException as e:
-        logger.warning(f"HTTP error: {e.detail}")
+        logger.warning(f"HTTP error occurred: {e.detail}")
         raise e
     except TypeError as te:
-        logger.error(f"Serialization error: {te}")
+        logger.error(f"Serialization error during response: {te}")
         raise HTTPException(status_code=500, detail="Response serialization error.")
     except Exception as e:
-        logger.exception("Unhandled error in /chat endpoint")
+        logger.exception("Unhandled exception in /chat endpoint.")
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
