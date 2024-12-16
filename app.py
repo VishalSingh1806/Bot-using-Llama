@@ -328,6 +328,9 @@ def query_validated_qa(user_embedding, question: str):
             question_similarity = cosine_similarity(user_embedding, question_vector)[0][0]
             answer_similarity = cosine_similarity(user_embedding, answer_vector)[0][0]
 
+            logger.info(f"Similarity with question: {db_question} -> {question_similarity}")
+            logger.info(f"Similarity with answer: {db_answer} -> {answer_similarity}")
+
             # Check for the best match
             if question_similarity > max_similarity:
                 max_similarity = question_similarity
@@ -340,7 +343,7 @@ def query_validated_qa(user_embedding, question: str):
 
         conn.close()
 
-        if max_similarity >= 0.7:  # Confidence threshold
+        if max_similarity >= 0.5:  # Relaxed threshold
             logger.info(f"Best match found with confidence {max_similarity}: {best_match} (source: {best_source})")
             return best_match, max_similarity, best_source
 
@@ -349,6 +352,7 @@ def query_validated_qa(user_embedding, question: str):
     except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
         return None, 0.0, None
+
 
 def fuzzy_match_fallback(question: str) -> str:
     """Use rapidfuzz to find the closest fallback response."""
@@ -508,7 +512,7 @@ async def chat_endpoint(request: Request):
         user_embedding = compute_embedding(question)
         db_answer, confidence, source = query_validated_qa(user_embedding, question)
 
-        if db_answer and confidence >= 0.7:  # Confidence threshold
+        if db_answer and confidence >= 0.5:  # Confidence threshold
             logger.info(f"Database response found for query: {question} with confidence {confidence} from {source}")
             refined_answer = refine_with_llama(question, db_answer)
             session_memory[session_id][-1]["response"] = refined_answer
