@@ -563,22 +563,22 @@ async def chat_endpoint(request: Request):
             session_memory[session_id][-1]["response"] = refined_answer
             learn_keywords_from_query(question)
             return {
-                "answer": refined_answer,
-                "confidence": convert_to_native(confidence),
+                "answer": refined_answer,  # Only returning the refined answer
+                "confidence": float(confidence),
                 "source": source,
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
         # Step 5: Fallback for no relevant database match
-        fallback_response = fuzzy_match_fallback(question)
-        session_memory[session_id][-1]["response"] = fallback_response or "No relevant information found."
+        fallback_response = fuzzy_match_fallback(question) or "I couldn't find relevant information."
+        session_memory[session_id][-1]["response"] = fallback_response
 
         # Update cache with the fallback response
         CACHE[question] = (user_embedding, fallback_response)
 
         learn_keywords_from_query(question)
         return {
-            "answer": fallback_response or "I couldn't find relevant information.",
+            "answer": fallback_response,
             "confidence": 0.5,
             "source": "fuzzy fallback",
             "response_time": f"{time.time() - start_time:.2f} seconds",
