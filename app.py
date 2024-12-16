@@ -30,7 +30,9 @@ conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
 DYNAMIC_KEYWORDS = set()  # Set to store unique keywords
 keyword_frequency = defaultdict(int)  # Defaultdict to track keyword frequency
 
-
+# Global cache for storing recently processed questions and answers
+CACHE = {}
+CACHE_THRESHOLD = 0.9  # Minimum similarity for cache retrieval
 
 # Define clean_expired_sessions before using it in the scheduler
 def clean_expired_sessions():
@@ -477,9 +479,20 @@ def test_db_connection():
     except Exception as ex:
         print("Unexpected error:", ex)
 
+def cache_lookup(query_embedding):
+    """Look up the cache for a similar question and its answer."""
+    max_similarity = 0.0
+    best_answer = None
+
+    for cached_question, (cached_embedding, cached_answer) in CACHE.items():
+        similarity = cosine_similarity(query_embedding, cached_embedding)[0][0]
+        if similarity > max_similarity:
+            max_similarity = similarity
+            best_answer = cached_answer
+
+    return best_answer, max_similarity
 
 # Chat Endpoint
-@app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
         start_time = time.time()
@@ -511,27 +524,22 @@ async def chat_endpoint(request: Request):
         # Load keywords dynamically
         load_keywords_from_file()
 
-        # Step 2: Check for exact or partial match in the database
-        conn = connect_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT question, answer FROM ValidatedQA")
-        db_entries = cursor.fetchall()
-        db_questions = [row[0] for row in db_entries]
-        partial_match = find_exact_or_partial_match(question, db_questions)
+        # Step 2: Compute query embedding
+        user_embedding = compute_embedding(question)
 
-        if partial_match:
-            db_answer = next((answer for q, answer in db_entries if q == partial_match), None)
-            logger.info(f"Exact or partial match found: {partial_match}")
-            session_memory[session_id][-1]["response"] = db_answer
+        # Step 3: Check cache for a similar query
+        cached_answer, cached_similarity = cache_lookup(user_embedding)
+
+        if cached_answer and cached_similarity >= CACHE_THRESHOLD:
+            logger.info(f"Cache hit: Returning cached answer with similarity {cached_similarity}")
             return {
-                "answer": db_answer,
-                "confidence": 1.0,
-                "source": "exact or partial match",
+                "answer": cached_answer,
+                "confidence": cached_similarity,
+                "source": "cache",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 3: Check query relevance using embeddings
-        user_embedding = compute_embedding(question)
+        # Step 4: Search the database for the best match
         db_answer, confidence, source = query_validated_qa(user_embedding, question)
 
         if db_answer and confidence >= 0.5:  # Adjusted threshold
@@ -549,6 +557,9 @@ async def chat_endpoint(request: Request):
                 logger.exception(f"LLaMA refinement failed: {llama_error}")
                 refined_answer = db_answer
 
+            # Update cache with the new response
+            CACHE[question] = (user_embedding, refined_answer)
+
             session_memory[session_id][-1]["response"] = refined_answer
             learn_keywords_from_query(question)
             return {
@@ -558,9 +569,13 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 4: Fallback for no relevant database match
+        # Step 5: Fallback for no relevant database match
         fallback_response = fuzzy_match_fallback(question)
         session_memory[session_id][-1]["response"] = fallback_response or "No relevant information found."
+
+        # Update cache with the fallback response
+        CACHE[question] = (user_embedding, fallback_response)
+
         learn_keywords_from_query(question)
         return {
             "answer": fallback_response or "I couldn't find relevant information.",
