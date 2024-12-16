@@ -4,6 +4,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
+from accelerate import infer_auto_device_map, init_empty_weights
 import sqlite3
 import numpy as np
 from datetime import datetime, timedelta
@@ -173,26 +174,26 @@ def get_llama_model():
     global llama_model, llama_tokenizer
     try:
         if llama_model is None or llama_tokenizer is None:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Define the device
             llama_tokenizer = AutoTokenizer.from_pretrained(
                 "meta-llama/Llama-2-7b-chat-hf",
-                token=hf_token  # Replace deprecated `use_auth_token` with `token`
+                token=hf_token
             )
+            # Distribute model across GPUs
             llama_model = AutoModelForCausalLM.from_pretrained(
                 "meta-llama/Llama-2-7b-chat-hf",
-                device_map="auto",
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                device_map="auto",  # Automatically distribute across available GPUs
+                torch_dtype=torch.float16,
                 low_cpu_mem_usage=True
-            ).to(device)
+            )
             llama_model.eval()
-        logger.info("LLaMA model and tokenizer loaded successfully.")
+            logger.info("LLaMA model and tokenizer loaded across multiple devices.")
+        return llama_model, llama_tokenizer
     except ImportError as e:
         logger.error(f"Missing dependency: {e}. Ensure `accelerate` is installed.")
         raise
     except Exception as e:
         logger.error(f"Failed to load LLaMA model: {e}")
         raise
-    return llama_model, llama_tokenizer
 
 def convert_to_native(value):
     """Convert numpy types to native Python types."""
@@ -392,20 +393,18 @@ def refine_with_llama(question: str, db_answer: str):
     try:
         llama_model, llama_tokenizer = get_llama_model()
         
-        # Ensure all inputs are on the correct device
-        device = llama_model.device
+        # Generate prompt
         prompt = (
             "Rephrase this information to directly answer the question:\n\n"
             f"Question: {question}\n\n"
             f"Answer: {db_answer}\n\n"
             "Provide a concise and direct response:"
         )
-        inputs = llama_tokenizer(prompt, return_tensors="pt").to(device)
         
-        # Ensure position IDs are on the same device as the model
-        position_ids = torch.arange(inputs['input_ids'].size(-1), device=device).unsqueeze(0)
-        inputs['position_ids'] = position_ids
-
+        # Tokenize and align inputs with the model's first device
+        inputs = llama_tokenizer(prompt, return_tensors="pt")
+        inputs = {key: val.to(llama_model.device) for key, val in inputs.items()}  # Align inputs to the model's device
+        
         # Generate refined response
         outputs = llama_model.generate(
             **inputs,
@@ -423,6 +422,7 @@ def refine_with_llama(question: str, db_answer: str):
     except Exception as e:
         logger.exception("Error refining response with LLaMA")
         return db_answer  # Fallback to the original answer
+
 
 
 def build_memory_context(session_id):
