@@ -169,19 +169,27 @@ llama_tokenizer = None
 
 def get_llama_model():
     global llama_model, llama_tokenizer
-    if llama_model is None or llama_tokenizer is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Define the device
-        llama_tokenizer = AutoTokenizer.from_pretrained(
-            "meta-llama/Llama-2-7b-chat-hf",
-            token=hf_token  # Replace deprecated `use_auth_token` with `token`
-        )
-        llama_model = AutoModelForCausalLM.from_pretrained(
-            "meta-llama/Llama-2-7b-chat-hf",
-            device_map="auto",
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            low_cpu_mem_usage=True
-        ).to(device)
-        llama_model.eval()
+    try:
+        if llama_model is None or llama_tokenizer is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Define the device
+            llama_tokenizer = AutoTokenizer.from_pretrained(
+                "meta-llama/Llama-2-7b-chat-hf",
+                token=hf_token  # Replace deprecated `use_auth_token` with `token`
+            )
+            llama_model = AutoModelForCausalLM.from_pretrained(
+                "meta-llama/Llama-2-7b-chat-hf",
+                device_map="auto",
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                low_cpu_mem_usage=True
+            ).to(device)
+            llama_model.eval()
+        logger.info("LLaMA model and tokenizer loaded successfully.")
+    except ImportError as e:
+        logger.error(f"Missing dependency: {e}. Ensure `accelerate` is installed.")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to load LLaMA model: {e}")
+        raise
     return llama_model, llama_tokenizer
 
 def convert_to_native(value):
@@ -396,10 +404,14 @@ def refine_with_llama(question: str, db_answer: str):
             temperature=0.7
         )
         refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+        logger.info("LLaMA refinement successful.")
         return refined_response
+    except ImportError as e:
+        logger.error(f"LLaMA refinement failed due to missing dependency: {e}")
+        return db_answer  # Fallback to the original answer
     except Exception as e:
         logger.exception("Error refining response with LLaMA")
-        return db_answer
+        return db_answer  # Fallback to the original answer
 
 def build_memory_context(session_id):
     """Build context from session memory."""
