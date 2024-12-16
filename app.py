@@ -519,7 +519,30 @@ def cache_lookup(query_embedding):
     return best_answer, max_similarity
 
 
-# Chat Endpoint
+# Configuration for maximum session management
+MAX_SESSIONS = 1000  # Maximum number of active sessions allowed in memory
+
+def evict_oldest_sessions():
+    """Evict the oldest sessions if the session count exceeds MAX_SESSIONS."""
+    try:
+        if len(session_memory) > MAX_SESSIONS:
+            # Sort sessions by the timestamp of the last interaction
+            sorted_sessions = sorted(
+                session_memory.items(),
+                key=lambda item: item[1][-1]["timestamp"] if item[1] else datetime.min,
+                reverse=False  # Oldest first
+            )
+            # Calculate how many sessions to remove
+            sessions_to_remove = len(session_memory) - MAX_SESSIONS
+
+            # Remove oldest sessions
+            for session_id, _ in sorted_sessions[:sessions_to_remove]:
+                del session_memory[session_id]
+            logger.info(f"Evicted {sessions_to_remove} oldest sessions to manage memory.")
+    except Exception as e:
+        logger.exception("Error during session eviction.")
+
+
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
@@ -534,8 +557,10 @@ async def chat_endpoint(request: Request):
             logger.warning("Received an empty message.")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Log session creation only when a new session is initialized
+        # Manage sessions
         if session_id not in session_memory:
+            if len(session_memory) >= MAX_SESSIONS:
+                evict_oldest_sessions()  # Evict sessions if limit is exceeded
             logger.info(f"New session initialized: {session_id}")
 
         # Step 1: Add the query to session memory with a placeholder response
@@ -545,7 +570,7 @@ async def chat_endpoint(request: Request):
             "timestamp": datetime.now()
         })
 
-        # Limit memory to the last 5 interactions to manage memory efficiently
+        # Limit memory to the last 5 interactions for this session
         if len(session_memory[session_id]) > 5:
             session_memory[session_id].pop(0)
 
