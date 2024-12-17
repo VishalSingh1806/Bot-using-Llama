@@ -25,8 +25,9 @@ from collections import defaultdict
 
 
 SESSION_TIMEOUT = timedelta(hours=1)
-# In-memory storage for session-based memory
-session_memory = defaultdict(list)  # {session_id: [(query, response), ...]}
+
+# Modify the session memory structure
+session_memory = defaultdict(lambda: {"history": [], "context": ""})  # Session structure
 conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
 
 # Global variables for dynamic keyword storage and frequency tracking
@@ -218,12 +219,20 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="cache-system uses symlinks by default")
 
 
-def preprocess_query(query):
-    # Remove years and extra spaces
-    query = re.sub(r'\b\d{4}\b', '', query)
-    # Convert to lowercase and strip whitespace
+def preprocess_query(query, session_id):
+    """Preprocess user query and resolve ambiguous references using session context."""
+    query = re.sub(r'\b\d{4}\b', '', query)  # Remove years
     query = query.lower().strip()
+
+    # Resolve ambiguous terms like 'it' or 'this'
+    if session_id in session_memory:
+        context = session_memory[session_id]["context"]
+        if context:
+            query = query.replace("it", context).replace("this", context)
+            logger.info(f"Resolved pronoun in query to: {query}")
+
     return query
+
 
 def find_exact_or_partial_match(query, db_questions):
     for db_question in db_questions:
@@ -317,14 +326,20 @@ def load_keywords_from_file():
         DYNAMIC_KEYWORDS = DYNAMIC_KEYWORDS or set()
         keyword_frequency = keyword_frequency or defaultdict(int)
 
-def learn_keywords_from_query(question: str):
-    """Learn keywords from the user query using NLP."""
+def learn_keywords_from_query(question: str, session_id: str):
+    """Learn keywords for long-term storage and update session context for conversational flow."""
     global DYNAMIC_KEYWORDS, keyword_frequency
 
-    # Process the question using spaCy
-    doc = nlp(question.lower())
+    # Extract entities/topics for session context
+    context_entities = extract_context_entities(question)
 
-    # Extract nouns, proper nouns, and named entities as keywords
+    # Update session context with the most recent entity
+    if context_entities:
+        session_memory[session_id]["context"] = context_entities[-1]  # Store last entity as the context
+        logger.info(f"Session {session_id} updated with context: {session_memory[session_id]['context']}")
+
+    # Process question using spaCy to extract keywords (for learning)
+    doc = nlp(question.lower())
     keywords = set()
     for token in doc:
         if token.pos_ in {"NOUN", "PROPN"} and token.text not in STOP_WORDS:
@@ -332,12 +347,13 @@ def learn_keywords_from_query(question: str):
     for ent in doc.ents:
         keywords.add(ent.text)
 
-    # Update the global dynamic keyword storage and frequency
+    # Update keyword learning storage
     for keyword in keywords:
         DYNAMIC_KEYWORDS.add(keyword)
         keyword_frequency[keyword] += 1
 
     logger.info(f"Learned keywords: {keywords}")
+
 
 def save_keywords_to_file():
     """Save dynamic keywords to a file."""
@@ -530,6 +546,25 @@ def build_memory_context(session_id):
     )
     logger.debug(f"Memory context for session {session_id}: {memory_context}")
     return memory_context
+
+def update_session_context(session_id, query, response):
+    """Update session memory with new query, response, and context."""
+    # Add to conversation history
+    session_memory[session_id]["history"].append({
+        "query": query,
+        "response": response,
+        "timestamp": datetime.now()
+    })
+    
+    # Keep only the last 5 interactions
+    if len(session_memory[session_id]["history"]) > 5:
+        session_memory[session_id]["history"].pop(0)
+
+    # Update context with keywords/entities
+    context_entities = extract_context_entities(query)
+    if context_entities:
+        session_memory[session_id]["context"] = context_entities[-1]  # Use the most recent entity
+        logger.info(f"Updated session context for {session_id}: {session_memory[session_id]['context']}")
 
 
 # Custom Exception Handlers
