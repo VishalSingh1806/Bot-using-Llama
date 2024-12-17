@@ -224,14 +224,14 @@ def preprocess_query(query, session_id):
     query = re.sub(r'\b\d{4}\b', '', query)  # Remove years
     query = query.lower().strip()
 
-    # Resolve ambiguous terms like 'it' or 'this'
-    if session_id in session_memory:
-        context = session_memory[session_id]["context"]
-        if context:
-            query = query.replace("it", context).replace("this", context)
-            logger.info(f"Resolved pronoun in query to: {query}")
+    # Resolve ambiguous terms like 'it' or 'this' using session context
+    context = session_memory[session_id]["context"]
+    if context:
+        query = re.sub(r'\bit\b|\bthis\b', context, query)
+        logger.info(f"Resolved pronouns in query to: {query}")
 
     return query
+
 
 
 def find_exact_or_partial_match(query, db_questions):
@@ -547,6 +547,14 @@ def build_memory_context(session_id):
     logger.debug(f"Memory context for session {session_id}: {memory_context}")
     return memory_context
 
+def extract_context_entities(text):
+    """Extract key entities or topics from the given text."""
+    doc = nlp(text)
+    entities = [ent.text for ent in doc.ents if ent.label_ in {"ORG", "PRODUCT", "EVENT", "WORK_OF_ART"}]
+    # Also include nouns as potential context entities
+    nouns = [token.text for token in doc if token.pos_ in {"NOUN", "PROPN"} and token.text.lower() not in STOP_WORDS]
+    return entities + nouns
+
 def update_session_context(session_id, query, response):
     """Update session memory with new query, response, and context."""
     # Add to conversation history
@@ -555,15 +563,15 @@ def update_session_context(session_id, query, response):
         "response": response,
         "timestamp": datetime.now()
     })
-    
+
     # Keep only the last 5 interactions
     if len(session_memory[session_id]["history"]) > 5:
         session_memory[session_id]["history"].pop(0)
 
-    # Update context with keywords/entities
-    context_entities = extract_context_entities(query)
+    # Extract context entities from the response (bot answer)
+    context_entities = extract_context_entities(response)
     if context_entities:
-        session_memory[session_id]["context"] = context_entities[-1]  # Use the most recent entity
+        session_memory[session_id]["context"] = context_entities[0]  # Use the first entity as context
         logger.info(f"Updated session context for {session_id}: {session_memory[session_id]['context']}")
 
 
@@ -660,32 +668,33 @@ async def chat_endpoint(request: Request):
 
         # Parse request data
         data = await request.json()
-        question = preprocess_query(data.get("message", "").strip())
+        raw_question = data.get("message", "").strip()
         session_id = data.get("session_id", "default")
 
-        if not question:
+        if not raw_question:
             logger.warning("Received an empty message.")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+        # Preprocess query and resolve ambiguous references using session context
+        question = preprocess_query(raw_question, session_id)
 
         # Manage sessions
         if session_id not in session_memory:
             if len(session_memory) >= MAX_SESSIONS:
                 evict_oldest_sessions()  # Evict sessions if limit is exceeded
             logger.info(f"New session initialized: {session_id}")
+            session_memory[session_id] = {"history": [], "context": ""}
 
         # Step 1: Add the query to session memory with a placeholder response
-        session_memory[session_id].append({
-            "query": question,
+        session_memory[session_id]["history"].append({
+            "query": raw_question,  # Store the raw user query
             "response": "Processing...",
             "timestamp": datetime.now()
         })
 
-        # Limit memory to the last 5 interactions for this session
-        if len(session_memory[session_id]) > 5:
-            session_memory[session_id].pop(0)
-
-        # Load dynamic keywords (no logging here to avoid repetitive logs)
-        load_keywords_from_file()
+        # Limit history to the last 5 interactions
+        if len(session_memory[session_id]["history"]) > 5:
+            session_memory[session_id]["history"].pop(0)
 
         # Step 2: Compute query embedding
         user_embedding = compute_embedding(question)
@@ -694,6 +703,7 @@ async def chat_endpoint(request: Request):
         cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
+            update_session_context(session_id, raw_question, cached_answer)
             return {
                 "answer": cached_answer,
                 "confidence": float(cached_similarity),
@@ -720,9 +730,9 @@ async def chat_endpoint(request: Request):
             # Update cache with refined answer
             CACHE[question] = (user_embedding, refined_answer)
 
-            # Update session memory with the final response
-            session_memory[session_id][-1]["response"] = refined_answer
-            learn_keywords_from_query(question)
+            # Update session context with query and refined answer
+            update_session_context(session_id, raw_question, refined_answer)
+
             return {
                 "answer": refined_answer,
                 "confidence": float(confidence),
@@ -737,9 +747,8 @@ async def chat_endpoint(request: Request):
         # Update cache with fallback response
         CACHE[question] = (user_embedding, fallback_response)
 
-        # Update session memory with fallback response
-        session_memory[session_id][-1]["response"] = fallback_response
-        learn_keywords_from_query(question)
+        # Update session context with query and fallback response
+        update_session_context(session_id, raw_question, fallback_response)
 
         return {
             "answer": fallback_response,
