@@ -209,10 +209,15 @@ def load_sentence_bert():
 
 
 def convert_to_native(value):
-    """Convert numpy types to native Python types."""
+    """Recursively convert numpy types to native Python types."""
     if isinstance(value, np.generic):
         return value.item()
+    elif isinstance(value, list):
+        return [convert_to_native(v) for v in value]
+    elif isinstance(value, dict):
+        return {k: convert_to_native(v) for k, v in value.items()}
     return value
+
 
 # Suppress symlink warnings for Hugging Face cache (Windows-specific)
 import warnings
@@ -231,20 +236,6 @@ def preprocess_query(query, session_id):
         logger.info(f"Resolved pronouns in query to: {query}")
 
     return query
-
-
-
-def find_exact_or_partial_match(query, db_questions):
-    for db_question in db_questions:
-        if query in db_question.lower() or db_question.lower() in query:
-            return db_question  # Return the closest match
-    return None
-
-def fuzzy_match_question(query, db_questions, threshold=75):
-    match = process.extractOne(query, db_questions, scorer=fuzz.ratio)
-    if match and match[1] >= threshold:
-        return match[0]  # Return the best-matching question
-    return None
 
 
 # Utility functions
@@ -393,10 +384,11 @@ def query_validated_qa(user_embedding, question: str):
         else:
             logger.debug("No database match found for the query.")
 
-        return best_match, max_similarity, "database"  # Always return source
+        return convert_to_native(best_match), convert_to_native(max_similarity), "database"
     except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
         return None, 0.0, None
+
 
 
 def fuzzy_match_fallback(question: str) -> str:
@@ -481,16 +473,13 @@ def enhanced_fallback_response(question: str, session_id: str) -> str:
         return "I encountered an issue while finding the best response. Please try again."
 
 
-def refine_with_llama(question: str, db_answer: str) -> str:
+def refine_with_llama(question: str, db_answer: str, session_id: str) -> str:
     """
-    Refine the database answer using the LLaMA model to provide a concise and direct response.
-    Explicitly define EPR as Extended Producer Responsibility for better contextual understanding.
+    Refine the database answer using the LLaMA model with session memory context.
     """
     try:
-        # Ensure the model and tokenizer are loaded
-        if llama_model is None or llama_tokenizer is None:
-            logger.error("LLaMA model or tokenizer not loaded.")
-            raise RuntimeError("LLaMA model or tokenizer is not initialized.")
+        # Build recent session context
+        memory_context = build_memory_context(session_id)
 
         # Explicitly define EPR in the prompt
         epr_definition = (
@@ -501,6 +490,7 @@ def refine_with_llama(question: str, db_answer: str) -> str:
         # Generate a concise rephrased response
         prompt = (
             f"{epr_definition}\n\n"
+            f"Context: {memory_context}\n"
             f"Question: {question}\n"
             f"Answer: {db_answer}\n\n"
             "Rephrased Response:"
@@ -513,7 +503,7 @@ def refine_with_llama(question: str, db_answer: str) -> str:
         # Generate the refined response
         outputs = llama_model.generate(
             **inputs,
-            max_new_tokens=100,  # Limit the response length
+            max_new_tokens=100,
             do_sample=True,
             top_k=50,
             temperature=0.7
@@ -522,20 +512,15 @@ def refine_with_llama(question: str, db_answer: str) -> str:
         # Decode and clean the response
         refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
-        # Extract only the rephrased response
         if "Rephrased Response:" in refined_response:
             refined_response = refined_response.split("Rephrased Response:")[-1].strip()
 
         logger.info("LLaMA refinement successful.")
         return refined_response
 
-    except RuntimeError as e:
-        logger.error(f"Runtime error during LLaMA refinement: {e}")
-        return db_answer  # Fallback to original database answer
     except Exception as e:
         logger.exception("Error refining response with LLaMA")
-        return db_answer  # Fallback to original database answer
-
+        return db_answer
 
 def build_memory_context(session_id):
     """Build context from session memory."""
@@ -675,6 +660,16 @@ async def chat_endpoint(request: Request):
             logger.warning("Received an empty message.")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
+        # Check query relevance
+        if not is_query_relevant(raw_question):
+            logger.info(f"Irrelevant query detected: {raw_question}")
+            return {
+                "answer": "I specialize in questions about Extended Producer Responsibility (EPR). Please ask something related to EPR.",
+                "confidence": 0.0,
+                "source": "relevance filter",
+                "response_time": f"{time.time() - start_time:.2f} seconds",
+            }
+
         # Preprocess query and resolve ambiguous references using session context
         question = preprocess_query(raw_question, session_id)
 
@@ -718,14 +713,7 @@ async def chat_endpoint(request: Request):
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
 
             # Refine the response with LLaMA
-            try:
-                refined_answer = refine_with_llama(question, db_answer)
-                if not refined_answer:
-                    logger.warning(f"LLaMA returned an empty response for session {session_id}. Using database answer.")
-                    refined_answer = db_answer
-            except Exception as llama_error:
-                logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
-                refined_answer = db_answer
+            refined_answer = refine_with_llama(question, db_answer)
 
             # Update cache with refined answer
             CACHE[question] = (user_embedding, refined_answer)
@@ -760,9 +748,6 @@ async def chat_endpoint(request: Request):
     except HTTPException as e:
         logger.warning(f"HTTP error occurred: {e.detail}")
         raise e
-    except TypeError as te:
-        logger.error(f"Serialization error during response: {te}")
-        raise HTTPException(status_code=500, detail="Response serialization error.")
     except Exception as e:
         logger.exception("Unhandled exception in /chat endpoint.")
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
