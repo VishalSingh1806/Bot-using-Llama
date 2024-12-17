@@ -713,7 +713,7 @@ async def chat_endpoint(request: Request):
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
 
             # Refine the response with LLaMA
-            refined_answer = refine_with_llama(question, db_answer)
+            refined_answer = refine_with_llama(question, db_answer, session_id)
 
             # Update cache with refined answer
             CACHE[question] = (user_embedding, refined_answer)
