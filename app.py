@@ -499,7 +499,7 @@ def refine_with_llama(question: str, db_answer: str) -> str:
         # Generate the refined response
         outputs = llama_model.generate(
             **inputs,
-            max_new_tokens=100,  # Limit the response length
+            max_new_tokens=120,  # Limit the response length
             do_sample=True,
             top_k=50,
             temperature=0.7
