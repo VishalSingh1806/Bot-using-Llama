@@ -1,41 +1,30 @@
-# Standard Library Imports
-import os
-import re
-import json
-import time
-import logging
-import sqlite3  
-from sqlite3 import Connection
-from datetime import datetime, timedelta
-from functools import lru_cache
-from collections import defaultdict
-from queue import Queue
-from threading import Lock
-import uuid
-import torch
-import numpy as np
-from spacy.lang.en.stop_words import STOP_WORDS
-from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer
-from spacy import load as spacy_load
-from rapidfuzz import fuzz, process
-from accelerate import infer_auto_device_map, init_empty_weights
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from apscheduler.schedulers.background import BackgroundScheduler
-import redis
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from prometheus_client import Summary, Counter, start_http_server, generate_latest, CONTENT_TYPE_LATEST
-from logging.handlers import RotatingFileHandler
-
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+from accelerate import infer_auto_device_map, init_empty_weights
+import sqlite3
+import numpy as np
+import spacy
+from spacy.lang.en.stop_words import STOP_WORDS
+from datetime import datetime, timedelta
+from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+from rapidfuzz import fuzz, process
+import json
+import re
+import logging
+import os
+import time
+from apscheduler.schedulers.background import BackgroundScheduler
+import uuid
+from functools import lru_cache
+from collections import defaultdict
 
 
 SESSION_TIMEOUT = timedelta(hours=1)
-
-# Load spaCy model globally during startup
-nlp = spacy_load("en_core_web_sm")
 
 # Modify the session memory structure
 session_memory = defaultdict(lambda: {"history": [], "context": ""})  # Session structure
@@ -52,60 +41,48 @@ CACHE_THRESHOLD = 0.9  # Minimum similarity for cache retrieval
 # Cache for dynamic query embeddings
 embedding_cache = {}
 
+# Load spaCy model globally during startup
+nlp = spacy.load("en_core_web_sm")
 
 # Define clean_expired_sessions before using it in the scheduler
 def clean_expired_sessions():
-    """Clean expired sessions using Redis TTL."""
+    """Clean expired sessions based on the SESSION_TIMEOUT."""
     try:
-        keys = redis_client.keys("session:*")  # Fetch all session keys
-        for key in keys:
-            ttl = redis_client.ttl(key)  # Get time-to-live for the key
-            if ttl == -2:  # Key does not exist (expired)
-                redis_client.delete(key)
-        logger.info("Expired sessions cleaned up successfully.")
-    except Exception as e:
-        logger.exception("Error during session cleanup.")
+        now = datetime.now()
+        expired_sessions = []
 
+        # Iterate through all sessions
+        for session_id, interactions in list(session_memory.items()):
+            if not interactions:
+                continue
+            # Check if the last interaction in the session is older than the timeout
+            if now - interactions[-1]["timestamp"] > SESSION_TIMEOUT:
+                expired_sessions.append(session_id)
+                del session_memory[session_id]
+
+        # Log cleaned sessions
+        if expired_sessions:
+            logger.info(f"Cleaned expired sessions: {expired_sessions}")
+        else:
+            logger.info("No expired sessions found during clean-up.")
+    except Exception as e:
+        logger.exception("Error during session clean-up")
         
 scheduler = BackgroundScheduler()
 scheduler.add_job(clean_expired_sessions, 'interval', hours=1)
 scheduler.start()
 
-
-# Prometheus metrics
-REQUEST_LATENCY = Summary('request_latency_seconds', 'Latency of HTTP requests')
-ERROR_COUNT = Counter('error_count', 'Total number of errors')
-
-# Start Prometheus server
-start_http_server(9100)  # Exposes metrics on http://localhost:9100
-
-
-# Logging configuration with rotation
-LOG_LEVEL = logging.INFO
+# Configure logging
+LOG_LEVEL = logging.INFO  # Set to DEBUG for detailed logs in development
 logging.basicConfig(
     level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        RotatingFileHandler("app_log.log", maxBytes=10 * 1024 * 1024, backupCount=5),  # 10 MB per file, 5 backups
+        logging.FileHandler("app_log.log"),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger("EPR_Chatbot")
-
-# Redis configuration
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
-REDIS_DB = 0
-
-# Initialize Redis client
-try:
-    redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
-    redis_client.ping()
-    logger.info("Connected to Redis successfully.")
-except redis.ConnectionError as e:
-    logger.error("Failed to connect to Redis.")
-    raise RuntimeError("Redis connection failed.") from e
-
 
 
 # Predefined openings
@@ -187,13 +164,6 @@ async def lifespan(app: FastAPI):
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
 
-# Route to expose Prometheus metrics via FastAPI
-@app.get("/metrics")
-async def metrics():
-    """Expose Prometheus metrics via FastAPI."""
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
-    
-
 # Directory paths
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_FILES_DIR = os.path.join(CURRENT_DIR, "static")
@@ -262,62 +232,15 @@ def preprocess_query(query, session_id):
 
     return query
 
-class SQLiteConnectionPool:
-    """Connection Pool to manage SQLite connections efficiently."""
-    def __init__(self, db_path: str, pool_size: int = 5):
-        self.db_path = db_path
-        self.pool = Queue(maxsize=pool_size)
-        self.lock = Lock()
-
-        # Pre-populate the pool
-        for _ in range(pool_size):
-            conn = sqlite3.connect(db_path, check_same_thread=False)
-            self.pool.put(conn)
-
-    def get_connection(self) -> Connection:
-        """Get a connection from the pool."""
-        with self.lock:
-            if not self.pool.empty():
-                return self.pool.get()
-            # If the pool is empty, create a new connection
-            return sqlite3.connect(self.db_path, check_same_thread=False)
-
-    def release_connection(self, conn: Connection):
-        """Release a connection back to the pool."""
-        with self.lock:
-            if not self.pool.full():
-                self.pool.put(conn)
-            else:
-                conn.close()  # Close the connection if the pool is full
-
-    def close_all_connections(self):
-        """Close all connections in the pool."""
-        with self.lock:
-            while not self.pool.empty():
-                conn = self.pool.get()
-                conn.close()
-
-
-# Initialize the SQLite connection pool
-DB_POOL = SQLiteConnectionPool(DB_PATH)
-
 
 # Utility functions
-def connect_db() -> Connection:
-    """Fetch a connection from the pool."""
+def connect_db():
+    """Connect to the SQLite database."""
     try:
-        return DB_POOL.get_connection()
-    except Exception as e:
-        logger.error(f"Failed to get database connection: {e}")
+        return sqlite3.connect(DB_PATH)
+    except sqlite3.Error as e:
+        logger.error(f"Database connection error: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed.")
-
-def release_db_connection(conn: Connection):
-    """Release the connection back to the pool."""
-    try:
-        DB_POOL.release_connection(conn)
-    except Exception as e:
-        logger.warning(f"Failed to release database connection: {e}")
-
 
 def compute_embedding(text: str):
     """Compute embedding for a given text using Sentence-BERT."""
@@ -437,45 +360,29 @@ def query_validated_qa(user_embedding, question: str):
     try:
         conn = connect_db()
         cursor = conn.cursor()
-        start_time = time.time()
-
-        # Fetch only required columns to minimize data transfer
         cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA")
-        rows = cursor.fetchall()
 
         max_similarity = 0.0
         best_match = None
 
-        for row in rows:
+        for row in cursor.fetchall():
             question_vector = np.frombuffer(row[2], dtype=np.float32).reshape(1, -1)
             similarity = cosine_similarity(user_embedding, question_vector)[0][0]
             if similarity > max_similarity:
                 max_similarity = similarity
                 best_match = row[1]  # Answer
 
-        query_duration = time.time() - start_time
-        logger.info(f"Database query completed in {query_duration:.2f} seconds")
-
-        release_db_connection(conn)  # Return the connection to the pool
+        conn.close()
 
         if best_match:
             logger.debug(f"Database match found with similarity {max_similarity:.2f}")
         else:
             logger.debug("No database match found for the query.")
 
-        return best_match, max_similarity, "database"
+        return best_match, max_similarity, "database"  # Always return source
     except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
         return None, 0.0, None
-    except Exception as ex:
-        logger.exception(f"Unexpected error in query_validated_qa: {ex}")
-        return None, 0.0, None
-    finally:
-        # Ensure connection release in case of unexpected errors
-        try:
-            release_db_connection(conn)
-        except UnboundLocalError:
-            pass  # Connection was not established
 
 
 def fuzzy_match_fallback(question: str) -> str:
@@ -508,11 +415,12 @@ def adaptive_fuzzy_match(question: str, threshold=80) -> str:
     Dynamically adjusts thresholds based on query complexity and context.
     """
     try:
+        # Analyze query complexity (e.g., length, presence of keywords)
         query_length = len(question.split())
         contains_keywords = any(keyword in question.lower() for keyword in DYNAMIC_KEYWORDS)
         adjusted_threshold = threshold - 10 if contains_keywords else threshold
 
-        # Attempt fuzzy matching against the fallback KB
+        # Attempt fuzzy matching against the knowledge base
         result = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
         if result:
             match, score = result[0], result[1]
@@ -533,32 +441,31 @@ def adaptive_fuzzy_match(question: str, threshold=80) -> str:
 
 
 def enhanced_fallback_response(question: str, session_id: str) -> str:
-    """
-    Enhanced fallback response with adaptive fuzzy matching and session context handling.
-    """
     try:
-        # Step 1: Attempt adaptive fuzzy matching
+        # 1. Attempt fuzzy matching against the knowledge base
         response = adaptive_fuzzy_match(question)
         if response:
             return response
 
-        # Step 2: Use session memory for context-aware matching
-        if session_id in session_memory and session_memory[session_id]["history"]:
+        # 2. Check recent session memory for context-based matching
+        if session_id in session_memory and session_memory[session_id]:
             context_match = process.extractOne(
                 question,
-                [interaction["query"] for interaction in session_memory[session_id]["history"]],
+                [interaction["query"] for interaction in session_memory[session_id]],
                 scorer=fuzz.ratio
             )
-            if context_match and context_match[1] >= 70:  # Adjust threshold for context
-                logger.info(f"Context match found: {context_match[0]} with score {context_match[1]}")
-                return f"I'm not sure, but here's something related: {context_match[0]}"
+            if context_match and context_match[1] >= 70:  # Lower threshold for session context
+                # Avoid self-repetition
+                if context_match[0] != question:
+                    return f"I'm not sure, but here's something related: {context_match[0]}"
 
-        # Step 3: Provide a generic fallback response
+        # 3. Provide a generic fallback response
         logger.info("Using generic fallback response.")
         return "I'm sorry, I couldn't find relevant information. Could you rephrase or ask something else?"
     except Exception as e:
         logger.exception("Error during enhanced fallback response generation.")
         return "I encountered an issue while finding the best response. Please try again."
+
 
 def refine_with_llama(question: str, db_answer: str) -> str:
     """
@@ -672,62 +579,48 @@ async def health_check():
     return {"status": "ok"}
 
 def test_db_connection():
-    """Test the database connection and ensure tables exist."""
+    """Test database connection and structure."""
     try:
-        conn = connect_db()
+        # Attempt to connect to the database
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
-        # Check the existence of tables
+        # Check tables in the database
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = cursor.fetchall()
-        logger.info(f"Tables in the database: {tables}")
+        print("Tables in the database:", tables)
 
-        # Check `ValidatedQA` table structure
+        # Verify structure of the `ValidatedQA` table
         if ("ValidatedQA",) in tables:
             cursor.execute("PRAGMA table_info(ValidatedQA);")
             columns = cursor.fetchall()
-            logger.info(f"Columns in ValidatedQA table: {columns}")
+            print("Columns in ValidatedQA table:", columns)
         else:
-            logger.warning("ValidatedQA table not found in the database.")
+            print("ValidatedQA table not found in the database.")
 
-        release_db_connection(conn)
-    except sqlite3.Error as e:
-        logger.error(f"Database connection test failed: {e}")
+        conn.close()
+    except sqlite3.DatabaseError as e:
+        print("Database connection error:", e)
     except Exception as ex:
-        logger.exception(f"Unexpected error during database connection test: {ex}")
+        print("Unexpected error:", ex)
 
 def cache_lookup(query_embedding):
-    """
-    Look up the cache for a similar question and its answer from Redis or in-memory cache.
-    Returns the best match and its similarity score.
-    """
-    try:
-        # Use Redis for cache lookup
-        cached_items = redis_client.hgetall("query_cache")
-        max_similarity = 0.0
-        best_answer = None
+    """Look up the cache for a similar question and its answer."""
+    max_similarity = 0.0
+    best_answer = None
 
-        for cached_question, cached_data in cached_items.items():
-            cached_data = json.loads(cached_data)  # Deserialize Redis JSON
-            cached_embedding = np.array(cached_data["embedding"])
-            cached_answer = cached_data["answer"]
+    for cached_question, (cached_embedding, cached_answer) in CACHE.items():
+        similarity = cosine_similarity(query_embedding, cached_embedding)[0][0]
+        if similarity > max_similarity:
+            max_similarity = similarity
+            best_answer = cached_answer
 
-            # Calculate similarity
-            similarity = cosine_similarity(query_embedding, cached_embedding.reshape(1, -1))[0][0]
-            if similarity > max_similarity:
-                max_similarity = similarity
-                best_answer = cached_answer
+    if best_answer:
+        logger.debug(f"Cache hit with similarity {max_similarity:.2f}")
+    else:
+        logger.debug("Cache miss for the query.")
 
-        if best_answer:
-            logger.info(f"Cache hit with similarity {max_similarity:.2f}")
-        else:
-            logger.info("Cache miss for the query.")
-        return best_answer, max_similarity
-
-    except Exception as e:
-        logger.exception("Error during cache lookup")
-        return None, 0.0
-
+    return best_answer, max_similarity
 
 
 # Configuration for maximum session management
@@ -755,61 +648,47 @@ def evict_oldest_sessions():
 
 
 @app.post("/chat")
-@REQUEST_LATENCY.time()
 async def chat_endpoint(request: Request):
     try:
-        start_time = time.time()  # Measure response time
+        start_time = time.time()
 
         # Parse request data
         data = await request.json()
         raw_question = data.get("message", "").strip()
-        session_id = data.get("session_id", str(uuid.uuid4()))  # Generate session ID if not provided
+        session_id = data.get("session_id", "default")
 
         if not raw_question:
-            logger.warning("Empty message received.")
+            logger.warning("Received an empty message.")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
-        logger.info(f"Session {session_id}: Received question: {raw_question}")
 
-        # Key for session in Redis
-        session_key = f"session:{session_id}"
-        session_data = redis_client.hgetall(session_key)
-
-        # Initialize session if it doesn't exist
-        if not session_data:
-            session_data = {
-                "history": json.dumps([]),  # Store history as JSON string
-                "context": "",
-                "last_interaction": datetime.utcnow().isoformat(),
-            }
-            logger.info(f"New session initialized: {session_id}")
-
-        # Update session history
-        history = json.loads(session_data.get("history", "[]"))
-        history.append(
-            {
-                "query": raw_question,
-                "response": "Processing...",
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-        )
-        session_data["history"] = json.dumps(history)
-        session_data["last_interaction"] = datetime.utcnow().isoformat()
-
-        # Save session data to Redis
-        redis_client.hmset(session_key, session_data)
-        redis_client.expire(session_key, int(SESSION_TIMEOUT.total_seconds()))
-
-        # Step 1: Preprocess the query
+        # Preprocess query and resolve ambiguous references using session context
         question = preprocess_query(raw_question, session_id)
+
+        # Manage sessions
+        if session_id not in session_memory:
+            if len(session_memory) >= MAX_SESSIONS:
+                evict_oldest_sessions()  # Evict sessions if limit is exceeded
+            logger.info(f"New session initialized: {session_id}")
+            session_memory[session_id] = {"history": [], "context": ""}
+
+        # Step 1: Add the query to session memory with a placeholder response
+        session_memory[session_id]["history"].append({
+            "query": raw_question,  # Store the raw user query
+            "response": "Processing...",
+            "timestamp": datetime.now()
+        })
+
+        # Limit history to the last 5 interactions
+        if len(session_memory[session_id]["history"]) > 5:
+            session_memory[session_id]["history"].pop(0)
 
         # Step 2: Compute query embedding
         user_embedding = compute_embedding(question)
 
-        # Step 3: Cache lookup using Redis
+        # Step 3: Cache Lookup
         cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
-            # Update session context with cached answer
             update_session_context(session_id, raw_question, cached_answer)
             return {
                 "answer": cached_answer,
@@ -818,9 +697,10 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 4: Database search for the best match
+        # Step 4: Database Search for Best Match
         db_answer, confidence, source = query_validated_qa(user_embedding, question)
-        if db_answer and confidence >= 0.5:  # Threshold for database match
+
+        if db_answer and confidence >= 0.5:  # Database confidence threshold
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
 
             # Refine the response with LLaMA
@@ -833,14 +713,10 @@ async def chat_endpoint(request: Request):
                 logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
                 refined_answer = db_answer
 
-            # Cache the refined response in Redis
-            redis_client.hset(
-                "query_cache",
-                question,
-                json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
-            )
+            # Update cache with refined answer
+            CACHE[question] = (user_embedding, refined_answer)
 
-            # Update session context with the refined answer
+            # Update session context with query and refined answer
             update_session_context(session_id, raw_question, refined_answer)
 
             return {
@@ -850,18 +726,14 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 5: Enhanced fallback response
+        # Step 5: Enhanced Fallback Response
         fallback_response = enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
 
-        # Cache the fallback response in Redis
-        redis_client.hset(
-            "query_cache",
-            question,
-            json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
-        )
+        # Update cache with fallback response
+        CACHE[question] = (user_embedding, fallback_response)
 
-        # Update session context with fallback response
+        # Update session context with query and fallback response
         update_session_context(session_id, raw_question, fallback_response)
 
         return {
@@ -873,12 +745,10 @@ async def chat_endpoint(request: Request):
 
     except HTTPException as e:
         logger.warning(f"HTTP error occurred: {e.detail}")
-        ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise e
     except TypeError as te:
         logger.error(f"Serialization error during response: {te}")
         raise HTTPException(status_code=500, detail="Response serialization error.")
     except Exception as e:
         logger.exception("Unhandled exception in /chat endpoint.")
-        ERROR_COUNT.inc()  # Increment error counter for Prometheus
-        raise HTTPException(status_code=500, detail="An internal server error occurred.")
+        raise HTTPException(status_code=500, detail="An internal server 
