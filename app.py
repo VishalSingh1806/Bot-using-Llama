@@ -26,22 +26,6 @@ import redis
 
 SESSION_TIMEOUT = timedelta(hours=1)
 
-# Redis configuration
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
-REDIS_DB = 0
-
-# Initialize Redis client
-try:
-    redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
-    redis_client.ping()
-    logger.info("Connected to Redis successfully.")
-except redis.ConnectionError as e:
-    logger.error("Failed to connect to Redis.")
-    raise RuntimeError("Redis connection failed.") from e
-
-
-
 # Modify the session memory structure
 session_memory = defaultdict(lambda: {"history": [], "context": ""})  # Session structure
 conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
@@ -79,6 +63,7 @@ scheduler.add_job(clean_expired_sessions, 'interval', hours=1)
 scheduler.start()
 
 # Configure logging
+# Configure logging
 LOG_LEVEL = logging.INFO  # Set to DEBUG for detailed logs in development
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -89,6 +74,21 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("EPR_Chatbot")
+
+# Redis configuration
+REDIS_HOST = "localhost"
+REDIS_PORT = 6379
+REDIS_DB = 0
+
+# Initialize Redis client
+try:
+    redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
+    redis_client.ping()
+    logger.info("Connected to Redis successfully.")
+except redis.ConnectionError as e:
+    logger.error("Failed to connect to Redis.")
+    raise RuntimeError("Redis connection failed.") from e
+
 
 
 # Predefined openings
