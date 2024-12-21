@@ -1,3 +1,6 @@
+model working completely fine
+----------------------------------------------------------------------
+
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -751,4 +754,4 @@ async def chat_endpoint(request: Request):
         raise HTTPException(status_code=500, detail="Response serialization error.")
     except Exception as e:
         logger.exception("Unhandled exception in /chat endpoint.")
-       raise HTTPException(status_code=500, detail="An internal server error occurred.")
+        raise HTTPException(status_code=500, detail="An internal server error occurred.")
