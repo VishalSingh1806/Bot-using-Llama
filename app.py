@@ -33,6 +33,9 @@ from logging.handlers import RotatingFileHandler
 
 SESSION_TIMEOUT = timedelta(hours=1)
 
+# Load spaCy model globally during startup
+nlp = spacy.load("en_core_web_sm")
+
 # Modify the session memory structure
 session_memory = defaultdict(lambda: {"history": [], "context": ""})  # Session structure
 conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
@@ -69,6 +72,8 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(clean_expired_sessions, 'interval', hours=1)
 scheduler.start()
 
+# Initialize FastAPI app with lifespan
+app = FastAPI(lifespan=lifespan)
 
 # Prometheus metrics
 REQUEST_LATENCY = Summary('request_latency_seconds', 'Latency of HTTP requests')
@@ -187,8 +192,7 @@ async def lifespan(app: FastAPI):
     save_keywords_to_file()  # Save keywords during shutdown
     logger.info("Application shutdown: Cleaning up resources.")
 
-# Initialize FastAPI app with lifespan
-app = FastAPI(lifespan=lifespan)
+
 
 # Directory paths
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
