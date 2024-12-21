@@ -1,4 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException
+from prometheus_client import Summary, Counter, start_http_server
+from logging.handlers import RotatingFileHandler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -66,14 +68,21 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(clean_expired_sessions, 'interval', hours=1)
 scheduler.start()
 
-# Configure logging
-# Configure logging
-LOG_LEVEL = logging.INFO  # Set to DEBUG for detailed logs in development
+
+# Prometheus metrics
+REQUEST_LATENCY = Summary('request_latency_seconds', 'Latency of HTTP requests')
+ERROR_COUNT = Counter('error_count', 'Total number of errors')
+
+# Start Prometheus server
+start_http_server(9100)  # Exposes metrics on http://localhost:9100
+
+# Logging configuration with rotation
+LOG_LEVEL = logging.INFO
 logging.basicConfig(
     level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("app_log.log"),
+        RotatingFileHandler("app_log.log", maxBytes=10 * 1024 * 1024, backupCount=5),  # 10 MB per file, 5 backups
         logging.StreamHandler()
     ]
 )
@@ -735,6 +744,7 @@ def evict_oldest_sessions():
 
 
 @app.post("/chat")
+@REQUEST_LATENCY.time()
 async def chat_endpoint(request: Request):
     try:
         start_time = time.time()  # Measure response time
@@ -747,7 +757,18 @@ async def chat_endpoint(request: Request):
         if not raw_question:
             logger.warning("Empty message received.")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
+        logger.info(f"Session {session_id}: Received question: {raw_question}")
 
+        # Simulate processing (e.g., database or cache lookup)
+        response = {
+            "answer": f"Processed question: {raw_question}",
+            "source": "example_source",
+            "confidence": 1.0,
+            "response_time": f"{time.time() - start_time:.2f} seconds"
+        }
+
+        logger.info(f"Session {session_id}: Response generated: {response}")
+        return response
         # Key for session in Redis
         session_key = f"session:{session_id}"
         session_data = redis_client.hgetall(session_key)
@@ -845,10 +866,12 @@ async def chat_endpoint(request: Request):
 
     except HTTPException as e:
         logger.warning(f"HTTP error occurred: {e.detail}")
+        ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise e
     except TypeError as te:
         logger.error(f"Serialization error during response: {te}")
         raise HTTPException(status_code=500, detail="Response serialization error.")
     except Exception as e:
         logger.exception("Unhandled exception in /chat endpoint.")
+        ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
