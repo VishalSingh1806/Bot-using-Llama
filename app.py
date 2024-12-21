@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from accelerate import infer_auto_device_map, init_empty_weights
-from sqlite3 import Connection, Cursor
+import sqlite3  # Ensure sqlite3 is fully imported
 from queue import Queue
 from threading import Lock
 import numpy as np
@@ -25,6 +25,7 @@ import uuid
 from functools import lru_cache
 from collections import defaultdict
 import redis
+
 
 SESSION_TIMEOUT = timedelta(hours=1)
 
