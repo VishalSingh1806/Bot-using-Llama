@@ -688,7 +688,7 @@ async def chat_endpoint(request: Request):
 
         # Save session data to Redis
         redis_client.hmset(session_key, session_data)
-        redis_client.expire(session_key, SESSION_TIMEOUT.total_seconds())
+        redis_client.expire(session_key, int(SESSION_TIMEOUT.total_seconds()))
 
         # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
