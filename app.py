@@ -612,22 +612,37 @@ def test_db_connection():
         print("Unexpected error:", ex)
 
 def cache_lookup(query_embedding):
-    """Look up the cache for a similar question and its answer."""
-    max_similarity = 0.0
-    best_answer = None
+    """
+    Look up the cache for a similar question and its answer from Redis or in-memory cache.
+    Returns the best match and its similarity score.
+    """
+    try:
+        # Use Redis for cache lookup
+        cached_items = redis_client.hgetall("query_cache")
+        max_similarity = 0.0
+        best_answer = None
 
-    for cached_question, (cached_embedding, cached_answer) in CACHE.items():
-        similarity = cosine_similarity(query_embedding, cached_embedding)[0][0]
-        if similarity > max_similarity:
-            max_similarity = similarity
-            best_answer = cached_answer
+        for cached_question, cached_data in cached_items.items():
+            cached_data = json.loads(cached_data)  # Deserialize Redis JSON
+            cached_embedding = np.array(cached_data["embedding"])
+            cached_answer = cached_data["answer"]
 
-    if best_answer:
-        logger.debug(f"Cache hit with similarity {max_similarity:.2f}")
-    else:
-        logger.debug("Cache miss for the query.")
+            # Calculate similarity
+            similarity = cosine_similarity(query_embedding, cached_embedding.reshape(1, -1))[0][0]
+            if similarity > max_similarity:
+                max_similarity = similarity
+                best_answer = cached_answer
 
-    return best_answer, max_similarity
+        if best_answer:
+            logger.info(f"Cache hit with similarity {max_similarity:.2f}")
+        else:
+            logger.info("Cache miss for the query.")
+        return best_answer, max_similarity
+
+    except Exception as e:
+        logger.exception("Error during cache lookup")
+        return None, 0.0
+
 
 
 # Configuration for maximum session management
@@ -697,7 +712,7 @@ async def chat_endpoint(request: Request):
         # Step 2: Compute query embedding
         user_embedding = compute_embedding(question)
 
-        # Step 3: Cache lookup
+        # Step 3: Cache lookup using Redis
         cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
@@ -725,8 +740,12 @@ async def chat_endpoint(request: Request):
                 logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
                 refined_answer = db_answer
 
-            # Update cache with refined answer
-            CACHE[question] = (user_embedding, refined_answer)
+            # Cache the refined response in Redis
+            redis_client.hset(
+                "query_cache",
+                question,
+                json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer})
+            )
 
             # Update session context with the refined answer
             update_session_context(session_id, raw_question, refined_answer)
@@ -742,8 +761,12 @@ async def chat_endpoint(request: Request):
         fallback_response = enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
 
-        # Update cache with fallback response
-        CACHE[question] = (user_embedding, fallback_response)
+        # Cache the fallback response in Redis
+        redis_client.hset(
+            "query_cache",
+            question,
+            json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response})
+        )
 
         # Update session context with fallback response
         update_session_context(session_id, raw_question, fallback_response)
@@ -763,6 +786,4 @@ async def chat_endpoint(request: Request):
         raise HTTPException(status_code=500, detail="Response serialization error.")
     except Exception as e:
         logger.exception("Unhandled exception in /chat endpoint.")
-        raise HTTPException(status_code=500, detail="An internal server error occurred.")
-
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
