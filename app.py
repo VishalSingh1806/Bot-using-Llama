@@ -34,7 +34,7 @@ from logging.handlers import RotatingFileHandler
 SESSION_TIMEOUT = timedelta(hours=1)
 
 # Load spaCy model globally during startup
-nlp = spacy.load("en_core_web_sm")
+nlp = spacy_load("en_core_web_sm")
 
 # Modify the session memory structure
 session_memory = defaultdict(lambda: {"history": [], "context": ""})  # Session structure
@@ -51,8 +51,6 @@ CACHE_THRESHOLD = 0.9  # Minimum similarity for cache retrieval
 # Cache for dynamic query embeddings
 embedding_cache = {}
 
-# Load spaCy model globally during startup
-nlp = spacy.load("en_core_web_sm")
 
 # Define clean_expired_sessions before using it in the scheduler
 def clean_expired_sessions():
