@@ -770,16 +770,6 @@ async def chat_endpoint(request: Request):
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
         logger.info(f"Session {session_id}: Received question: {raw_question}")
 
-        # Simulate processing (e.g., database or cache lookup)
-        response = {
-            "answer": f"Processed question: {raw_question}",
-            "source": "example_source",
-            "confidence": 1.0,
-            "response_time": f"{time.time() - start_time:.2f} seconds"
-        }
-
-        logger.info(f"Session {session_id}: Response generated: {response}")
-        return response
         # Key for session in Redis
         session_key = f"session:{session_id}"
         session_data = redis_client.hgetall(session_key)
@@ -789,13 +779,19 @@ async def chat_endpoint(request: Request):
             session_data = {
                 "history": json.dumps([]),  # Store history as JSON string
                 "context": "",
-                "last_interaction": datetime.utcnow().isoformat()
+                "last_interaction": datetime.utcnow().isoformat(),
             }
             logger.info(f"New session initialized: {session_id}")
 
         # Update session history
-        history = json.loads(session_data["history"])
-        history.append({"query": raw_question, "response": "Processing...", "timestamp": datetime.utcnow().isoformat()})
+        history = json.loads(session_data.get("history", "[]"))
+        history.append(
+            {
+                "query": raw_question,
+                "response": "Processing...",
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        )
         session_data["history"] = json.dumps(history)
         session_data["last_interaction"] = datetime.utcnow().isoformat()
 
@@ -841,7 +837,7 @@ async def chat_endpoint(request: Request):
             redis_client.hset(
                 "query_cache",
                 question,
-                json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer})
+                json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
             )
 
             # Update session context with the refined answer
@@ -862,7 +858,7 @@ async def chat_endpoint(request: Request):
         redis_client.hset(
             "query_cache",
             question,
-            json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response})
+            json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
         )
 
         # Update session context with fallback response
@@ -886,6 +882,3 @@ async def chat_endpoint(request: Request):
         logger.exception("Unhandled exception in /chat endpoint.")
         ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
-
-
-
