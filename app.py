@@ -473,7 +473,6 @@ def enhanced_fallback_response(question: str, session_id: str) -> str:
         logger.exception("Error during enhanced fallback response generation.")
         return "I encountered an issue while finding the best response. Please try again."
 
-
 def refine_with_llama(question: str, db_answer: str) -> str:
     """
     Refine the database answer using the LLaMA model to provide a concise and direct response.
