@@ -454,10 +454,11 @@ def enhanced_fallback_response(question: str, session_id: str) -> str:
             return response
 
         # 2. Check recent session memory for context-based matching
-        if session_id in session_memory and session_memory[session_id]:
+        if session_id in session_memory and session_memory[session_id].get("history"):
+            # Safely access history, which should be a list of interactions
             context_match = process.extractOne(
                 question,
-                [interaction["query"] for interaction in session_memory[session_id]],
+                [interaction["query"] for interaction in session_memory[session_id]["history"]],
                 scorer=fuzz.ratio
             )
             if context_match and context_match[1] >= 70:  # Lower threshold for session context
