@@ -6,6 +6,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from accelerate import infer_auto_device_map, init_empty_weights
 import sqlite3  # Ensure sqlite3 is fully imported
+from sqlite3 import Connection
 from queue import Queue
 from threading import Lock
 import numpy as np
