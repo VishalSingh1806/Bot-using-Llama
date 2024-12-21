@@ -22,9 +22,25 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import uuid
 from functools import lru_cache
 from collections import defaultdict
-
+import redis
 
 SESSION_TIMEOUT = timedelta(hours=1)
+
+# Redis configuration
+REDIS_HOST = "localhost"
+REDIS_PORT = 6379
+REDIS_DB = 0
+
+# Initialize Redis client
+try:
+    redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
+    redis_client.ping()
+    logger.info("Connected to Redis successfully.")
+except redis.ConnectionError as e:
+    logger.error("Failed to connect to Redis.")
+    raise RuntimeError("Redis connection failed.") from e
+
+
 
 # Modify the session memory structure
 session_memory = defaultdict(lambda: {"history": [], "context": ""})  # Session structure
@@ -46,27 +62,17 @@ nlp = spacy.load("en_core_web_sm")
 
 # Define clean_expired_sessions before using it in the scheduler
 def clean_expired_sessions():
-    """Clean expired sessions based on the SESSION_TIMEOUT."""
+    """Clean expired sessions using Redis TTL."""
     try:
-        now = datetime.now()
-        expired_sessions = []
-
-        # Iterate through all sessions
-        for session_id, interactions in list(session_memory.items()):
-            if not interactions:
-                continue
-            # Check if the last interaction in the session is older than the timeout
-            if now - interactions[-1]["timestamp"] > SESSION_TIMEOUT:
-                expired_sessions.append(session_id)
-                del session_memory[session_id]
-
-        # Log cleaned sessions
-        if expired_sessions:
-            logger.info(f"Cleaned expired sessions: {expired_sessions}")
-        else:
-            logger.info("No expired sessions found during clean-up.")
+        keys = redis_client.keys("session:*")  # Fetch all session keys
+        for key in keys:
+            ttl = redis_client.ttl(key)  # Get time-to-live for the key
+            if ttl == -2:  # Key does not exist (expired)
+                redis_client.delete(key)
+        logger.info("Expired sessions cleaned up successfully.")
     except Exception as e:
-        logger.exception("Error during session clean-up")
+        logger.exception("Error during session cleanup.")
+
         
 scheduler = BackgroundScheduler()
 scheduler.add_job(clean_expired_sessions, 'interval', hours=1)
@@ -650,45 +656,51 @@ def evict_oldest_sessions():
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     try:
-        start_time = time.time()
+        start_time = time.time()  # Measure response time
 
         # Parse request data
         data = await request.json()
         raw_question = data.get("message", "").strip()
-        session_id = data.get("session_id", "default")
+        session_id = data.get("session_id", str(uuid.uuid4()))  # Generate session ID if not provided
 
         if not raw_question:
-            logger.warning("Received an empty message.")
+            logger.warning("Empty message received.")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Preprocess query and resolve ambiguous references using session context
-        question = preprocess_query(raw_question, session_id)
+        # Key for session in Redis
+        session_key = f"session:{session_id}"
+        session_data = redis_client.hgetall(session_key)
 
-        # Manage sessions
-        if session_id not in session_memory:
-            if len(session_memory) >= MAX_SESSIONS:
-                evict_oldest_sessions()  # Evict sessions if limit is exceeded
+        # Initialize session if it doesn't exist
+        if not session_data:
+            session_data = {
+                "history": json.dumps([]),  # Store history as JSON string
+                "context": "",
+                "last_interaction": datetime.utcnow().isoformat()
+            }
             logger.info(f"New session initialized: {session_id}")
-            session_memory[session_id] = {"history": [], "context": ""}
 
-        # Step 1: Add the query to session memory with a placeholder response
-        session_memory[session_id]["history"].append({
-            "query": raw_question,  # Store the raw user query
-            "response": "Processing...",
-            "timestamp": datetime.now()
-        })
+        # Update session history
+        history = json.loads(session_data["history"])
+        history.append({"query": raw_question, "response": "Processing...", "timestamp": datetime.utcnow().isoformat()})
+        session_data["history"] = json.dumps(history)
+        session_data["last_interaction"] = datetime.utcnow().isoformat()
 
-        # Limit history to the last 5 interactions
-        if len(session_memory[session_id]["history"]) > 5:
-            session_memory[session_id]["history"].pop(0)
+        # Save session data to Redis
+        redis_client.hmset(session_key, session_data)
+        redis_client.expire(session_key, SESSION_TIMEOUT.total_seconds())
+
+        # Step 1: Preprocess the query
+        question = preprocess_query(raw_question, session_id)
 
         # Step 2: Compute query embedding
         user_embedding = compute_embedding(question)
 
-        # Step 3: Cache Lookup
+        # Step 3: Cache lookup
         cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
+            # Update session context with cached answer
             update_session_context(session_id, raw_question, cached_answer)
             return {
                 "answer": cached_answer,
@@ -697,10 +709,9 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 4: Database Search for Best Match
+        # Step 4: Database search for the best match
         db_answer, confidence, source = query_validated_qa(user_embedding, question)
-
-        if db_answer and confidence >= 0.5:  # Database confidence threshold
+        if db_answer and confidence >= 0.5:  # Threshold for database match
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
 
             # Refine the response with LLaMA
@@ -716,7 +727,7 @@ async def chat_endpoint(request: Request):
             # Update cache with refined answer
             CACHE[question] = (user_embedding, refined_answer)
 
-            # Update session context with query and refined answer
+            # Update session context with the refined answer
             update_session_context(session_id, raw_question, refined_answer)
 
             return {
@@ -726,14 +737,14 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 5: Enhanced Fallback Response
+        # Step 5: Enhanced fallback response
         fallback_response = enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
 
         # Update cache with fallback response
         CACHE[question] = (user_embedding, fallback_response)
 
-        # Update session context with query and fallback response
+        # Update session context with fallback response
         update_session_context(session_id, raw_question, fallback_response)
 
         return {
@@ -751,4 +762,6 @@ async def chat_endpoint(request: Request):
         raise HTTPException(status_code=500, detail="Response serialization error.")
     except Exception as e:
         logger.exception("Unhandled exception in /chat endpoint.")
+        raise HTTPException(status_code=500, detail="An internal server error occurred.")
+
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
