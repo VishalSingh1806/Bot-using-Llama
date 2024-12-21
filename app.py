@@ -421,12 +421,11 @@ def adaptive_fuzzy_match(question: str, threshold=80) -> str:
     Dynamically adjusts thresholds based on query complexity and context.
     """
     try:
-        # Analyze query complexity (e.g., length, presence of keywords)
         query_length = len(question.split())
         contains_keywords = any(keyword in question.lower() for keyword in DYNAMIC_KEYWORDS)
         adjusted_threshold = threshold - 10 if contains_keywords else threshold
 
-        # Attempt fuzzy matching against the knowledge base
+        # Attempt fuzzy matching against the fallback KB
         result = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
         if result:
             match, score = result[0], result[1]
@@ -447,26 +446,27 @@ def adaptive_fuzzy_match(question: str, threshold=80) -> str:
 
 
 def enhanced_fallback_response(question: str, session_id: str) -> str:
+    """
+    Enhanced fallback response with adaptive fuzzy matching and session context handling.
+    """
     try:
-        # 1. Attempt fuzzy matching against the knowledge base
+        # Step 1: Attempt adaptive fuzzy matching
         response = adaptive_fuzzy_match(question)
         if response:
             return response
 
-        # 2. Check recent session memory for context-based matching
-        if session_id in session_memory and session_memory[session_id].get("history"):
-            # Safely access history, which should be a list of interactions
+        # Step 2: Use session memory for context-aware matching
+        if session_id in session_memory and session_memory[session_id]["history"]:
             context_match = process.extractOne(
                 question,
                 [interaction["query"] for interaction in session_memory[session_id]["history"]],
                 scorer=fuzz.ratio
             )
-            if context_match and context_match[1] >= 70:  # Lower threshold for session context
-                # Avoid self-repetition
-                if context_match[0] != question:
-                    return f"I'm not sure, but here's something related: {context_match[0]}"
+            if context_match and context_match[1] >= 70:  # Adjust threshold for context
+                logger.info(f"Context match found: {context_match[0]} with score {context_match[1]}")
+                return f"I'm not sure, but here's something related: {context_match[0]}"
 
-        # 3. Provide a generic fallback response
+        # Step 3: Provide a generic fallback response
         logger.info("Using generic fallback response.")
         return "I'm sorry, I couldn't find relevant information. Could you rephrase or ask something else?"
     except Exception as e:
