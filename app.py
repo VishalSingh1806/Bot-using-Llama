@@ -70,8 +70,6 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(clean_expired_sessions, 'interval', hours=1)
 scheduler.start()
 
-# Initialize FastAPI app with lifespan
-app = FastAPI(lifespan=lifespan)
 
 # Prometheus metrics
 REQUEST_LATENCY = Summary('request_latency_seconds', 'Latency of HTTP requests')
@@ -190,6 +188,8 @@ async def lifespan(app: FastAPI):
     save_keywords_to_file()  # Save keywords during shutdown
     logger.info("Application shutdown: Cleaning up resources.")
 
+# Initialize FastAPI app with lifespan
+app = FastAPI(lifespan=lifespan)
 
 
 # Directory paths
