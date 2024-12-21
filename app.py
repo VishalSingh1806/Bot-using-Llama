@@ -5,7 +5,9 @@ from fastapi.staticfiles import StaticFiles
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from accelerate import infer_auto_device_map, init_empty_weights
-import sqlite3
+from sqlite3 import Connection, Cursor
+from queue import Queue
+from threading import Lock
 import numpy as np
 import spacy
 from spacy.lang.en.stop_words import STOP_WORDS
@@ -238,15 +240,62 @@ def preprocess_query(query, session_id):
 
     return query
 
+class SQLiteConnectionPool:
+    """Connection Pool to manage SQLite connections efficiently."""
+    def __init__(self, db_path: str, pool_size: int = 5):
+        self.db_path = db_path
+        self.pool = Queue(maxsize=pool_size)
+        self.lock = Lock()
+
+        # Pre-populate the pool
+        for _ in range(pool_size):
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            self.pool.put(conn)
+
+    def get_connection(self) -> Connection:
+        """Get a connection from the pool."""
+        with self.lock:
+            if not self.pool.empty():
+                return self.pool.get()
+            # If the pool is empty, create a new connection
+            return sqlite3.connect(self.db_path, check_same_thread=False)
+
+    def release_connection(self, conn: Connection):
+        """Release a connection back to the pool."""
+        with self.lock:
+            if not self.pool.full():
+                self.pool.put(conn)
+            else:
+                conn.close()  # Close the connection if the pool is full
+
+    def close_all_connections(self):
+        """Close all connections in the pool."""
+        with self.lock:
+            while not self.pool.empty():
+                conn = self.pool.get()
+                conn.close()
+
+
+# Initialize the SQLite connection pool
+DB_POOL = SQLiteConnectionPool(DB_PATH)
+
 
 # Utility functions
-def connect_db():
-    """Connect to the SQLite database."""
+def connect_db() -> Connection:
+    """Fetch a connection from the pool."""
     try:
-        return sqlite3.connect(DB_PATH)
-    except sqlite3.Error as e:
-        logger.error(f"Database connection error: {e}")
+        return DB_POOL.get_connection()
+    except Exception as e:
+        logger.error(f"Failed to get database connection: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed.")
+
+def release_db_connection(conn: Connection):
+    """Release the connection back to the pool."""
+    try:
+        DB_POOL.release_connection(conn)
+    except Exception as e:
+        logger.warning(f"Failed to release database connection: {e}")
+
 
 def compute_embedding(text: str):
     """Compute embedding for a given text using Sentence-BERT."""
@@ -366,29 +415,45 @@ def query_validated_qa(user_embedding, question: str):
     try:
         conn = connect_db()
         cursor = conn.cursor()
+        start_time = time.time()
+
+        # Fetch only required columns to minimize data transfer
         cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA")
+        rows = cursor.fetchall()
 
         max_similarity = 0.0
         best_match = None
 
-        for row in cursor.fetchall():
+        for row in rows:
             question_vector = np.frombuffer(row[2], dtype=np.float32).reshape(1, -1)
             similarity = cosine_similarity(user_embedding, question_vector)[0][0]
             if similarity > max_similarity:
                 max_similarity = similarity
                 best_match = row[1]  # Answer
 
-        conn.close()
+        query_duration = time.time() - start_time
+        logger.info(f"Database query completed in {query_duration:.2f} seconds")
+
+        release_db_connection(conn)  # Return the connection to the pool
 
         if best_match:
             logger.debug(f"Database match found with similarity {max_similarity:.2f}")
         else:
             logger.debug("No database match found for the query.")
 
-        return best_match, max_similarity, "database"  # Always return source
+        return best_match, max_similarity, "database"
     except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
         return None, 0.0, None
+    except Exception as ex:
+        logger.exception(f"Unexpected error in query_validated_qa: {ex}")
+        return None, 0.0, None
+    finally:
+        # Ensure connection release in case of unexpected errors
+        try:
+            release_db_connection(conn)
+        except UnboundLocalError:
+            pass  # Connection was not established
 
 
 def fuzzy_match_fallback(question: str) -> str:
@@ -585,30 +650,29 @@ async def health_check():
     return {"status": "ok"}
 
 def test_db_connection():
-    """Test database connection and structure."""
+    """Test the database connection and ensure tables exist."""
     try:
-        # Attempt to connect to the database
-        conn = sqlite3.connect(DB_PATH)
+        conn = connect_db()
         cursor = conn.cursor()
 
-        # Check tables in the database
+        # Check the existence of tables
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = cursor.fetchall()
-        print("Tables in the database:", tables)
+        logger.info(f"Tables in the database: {tables}")
 
-        # Verify structure of the `ValidatedQA` table
+        # Check `ValidatedQA` table structure
         if ("ValidatedQA",) in tables:
             cursor.execute("PRAGMA table_info(ValidatedQA);")
             columns = cursor.fetchall()
-            print("Columns in ValidatedQA table:", columns)
+            logger.info(f"Columns in ValidatedQA table: {columns}")
         else:
-            print("ValidatedQA table not found in the database.")
+            logger.warning("ValidatedQA table not found in the database.")
 
-        conn.close()
-    except sqlite3.DatabaseError as e:
-        print("Database connection error:", e)
+        release_db_connection(conn)
+    except sqlite3.Error as e:
+        logger.error(f"Database connection test failed: {e}")
     except Exception as ex:
-        print("Unexpected error:", ex)
+        logger.exception(f"Unexpected error during database connection test: {ex}")
 
 def cache_lookup(query_embedding):
     """
