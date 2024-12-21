@@ -1,33 +1,34 @@
-from fastapi import FastAPI, Request, HTTPException
-from prometheus_client import Summary, Counter, start_http_server
-from logging.handlers import RotatingFileHandler
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
-from accelerate import infer_auto_device_map, init_empty_weights
-import sqlite3  # Ensure sqlite3 is fully imported
-from sqlite3 import Connection
-from queue import Queue
-from threading import Lock
-import numpy as np
-import spacy
-from spacy.lang.en.stop_words import STOP_WORDS
-from datetime import datetime, timedelta
-from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer
-from rapidfuzz import fuzz, process
-import json
-import re
-import logging
+# Standard Library Imports
 import os
+import re
+import json
 import time
-from apscheduler.schedulers.background import BackgroundScheduler
-import uuid
+import logging
+import sqlite3  
+from datetime import datetime, timedelta
 from functools import lru_cache
 from collections import defaultdict
+from queue import Queue
+from threading import Lock
+import uuid
+import torch
+import numpy as np
+from spacy.lang.en.stop_words import STOP_WORDS
+from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+from spacy import load as spacy_load
+from rapidfuzz import fuzz, process
+from accelerate import infer_auto_device_map, init_empty_weights
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from apscheduler.schedulers.background import BackgroundScheduler
 import redis
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from prometheus_client import Summary, Counter, start_http_server, generate_latest, CONTENT_TYPE_LATEST
+from logging.handlers import RotatingFileHandler
+
 
 
 SESSION_TIMEOUT = timedelta(hours=1)
