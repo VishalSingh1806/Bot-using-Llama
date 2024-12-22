@@ -6,6 +6,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from accelerate import infer_auto_device_map, init_empty_weights
 import sqlite3
+import psycopg2
 import numpy as np
 import spacy
 from spacy.lang.en.stop_words import STOP_WORDS
@@ -233,12 +234,19 @@ def preprocess_query(query, session_id):
     return query
 
 
-# Utility functions
+# Updated connect_db function for PostgreSQL
 def connect_db():
-    """Connect to the SQLite database."""
+    """Connect to the GCP PostgreSQL database."""
     try:
-        return sqlite3.connect(DB_PATH)
-    except sqlite3.Error as e:
+        conn = psycopg2.connect(
+            dbname="epr_database",
+            user="postgres",
+            password="Tech123",
+            host="34.100.134.186",
+            port="5432"
+        )
+        return conn
+    except psycopg2.Error as e:
         logger.error(f"Database connection error: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed.")
 
@@ -356,31 +364,43 @@ def save_keywords_to_file():
 
 
 def query_validated_qa(user_embedding, question: str):
-    """Query the ValidatedQA table for the best match."""
+    """Query the ValidatedQA table for the best match, including related sections."""
     try:
         conn = connect_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA")
+        
+        # Fetch QA pairs with embeddings and section IDs
+        cursor.execute("SELECT id, question, answer, question_embedding, section_id FROM ValidatedQA")
+        qa_pairs = cursor.fetchall()
 
         max_similarity = 0.0
         best_match = None
+        best_section = None
 
-        for row in cursor.fetchall():
-            question_vector = np.frombuffer(row[2], dtype=np.float32).reshape(1, -1)
+        for qa_id, db_question, db_answer, db_question_embedding, section_id in qa_pairs:
+            question_vector = np.frombuffer(db_question_embedding, dtype=np.float32).reshape(1, -1)
             similarity = cosine_similarity(user_embedding, question_vector)[0][0]
             if similarity > max_similarity:
                 max_similarity = similarity
-                best_match = row[1]  # Answer
+                best_match = (qa_id, db_answer, section_id)
+
+        if best_match:
+            qa_id, db_answer, section_id = best_match
+            # Fetch section content if section_id is available
+            if section_id:
+                cursor.execute("SELECT content FROM Sections WHERE id = %s", (section_id,))
+                section_result = cursor.fetchone()
+                best_section = section_result[0] if section_result else None
 
         conn.close()
 
         if best_match:
-            logger.debug(f"Database match found with similarity {max_similarity:.2f}")
+            # Combine answer with section content for a comprehensive response
+            combined_answer = f"{db_answer}\n\nAdditional Context:\n{best_section}" if best_section else db_answer
+            return combined_answer, max_similarity, "database"
         else:
-            logger.debug("No database match found for the query.")
-
-        return best_match, max_similarity, "database"  # Always return source
-    except sqlite3.Error as e:
+            return None, 0.0, None
+    except psycopg2.Error as e:
         logger.error(f"Database query error: {e}")
         return None, 0.0, None
 
@@ -470,21 +490,15 @@ def enhanced_fallback_response(question: str, session_id: str) -> str:
 def refine_with_llama(question: str, db_answer: str) -> str:
     """
     Refine the database answer using the LLaMA model to provide a concise and direct response.
-    Explicitly define EPR as Extended Producer Responsibility for better contextual understanding.
     """
     try:
-        # Ensure the model and tokenizer are loaded
-        if llama_model is None or llama_tokenizer is None:
-            logger.error("LLaMA model or tokenizer not loaded.")
-            raise RuntimeError("LLaMA model or tokenizer is not initialized.")
-
         # Explicitly define EPR in the prompt
         epr_definition = (
             "EPR stands for Extended Producer Responsibility, which is a policy approach where producers are responsible "
             "for the treatment or disposal of post-consumer products. It focuses on plastic waste management and compliance rules."
         )
 
-        # Generate a concise rephrased response
+        # Include section context in the refinement
         prompt = (
             f"{epr_definition}\n\n"
             f"Question: {question}\n"
@@ -492,35 +506,23 @@ def refine_with_llama(question: str, db_answer: str) -> str:
             "Rephrased Response:"
         )
 
-        # Tokenize inputs and align them with the model's device
         inputs = llama_tokenizer(prompt, return_tensors="pt")
         inputs = {key: val.to(llama_model.device) for key, val in inputs.items()}
 
-        # Generate the refined response
         outputs = llama_model.generate(
             **inputs,
-            max_new_tokens=130,  # Limit the response length
+            max_new_tokens=130,
             do_sample=True,
             top_k=50,
             temperature=0.7
         )
 
-        # Decode and clean the response
         refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-
-        # Extract only the rephrased response
-        if "Rephrased Response:" in refined_response:
-            refined_response = refined_response.split("Rephrased Response:")[-1].strip()
-
-        logger.info("LLaMA refinement successful.")
-        return refined_response
-
-    except RuntimeError as e:
-        logger.error(f"Runtime error during LLaMA refinement: {e}")
-        return db_answer  # Fallback to original database answer
+        return refined_response.split("Rephrased Response:")[-1].strip()
     except Exception as e:
-        logger.exception("Error refining response with LLaMA")
-        return db_answer  # Fallback to original database answer
+        logger.error(f"Error refining response with LLaMA: {e}")
+        return db_answer
+
 
 
 def build_memory_context(session_id):
