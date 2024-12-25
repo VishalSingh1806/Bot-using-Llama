@@ -27,6 +27,13 @@ from collections import defaultdict
 
 SESSION_TIMEOUT = timedelta(hours=1)
 
+INITIAL_QUESTIONS = [
+    "What is your name?",
+    "What is your email?",
+    "What is your phone number?",
+    "What is your organization name?"
+]
+
 # Modify the session memory structure
 session_memory = defaultdict(lambda: {"history": [], "context": ""})  # Session structure
 conversation_context = defaultdict(bool)  # Tracks if the session is EPR-related
@@ -293,8 +300,16 @@ def is_query_relevant(query: str, threshold: float = 0.7) -> bool:
     except Exception as e:
         logger.exception("Error in is_query_relevant")
         raise
-
         
+def validate_email(email: str) -> bool:
+    """Validate email format."""
+    import re
+    pattern = r"[^@]+@[^@]+\.[^@]+"
+    return re.match(pattern, email) is not None
+
+def validate_phone(phone: str) -> bool:
+    """Validate phone number format."""
+    return phone.isdigit() and len(phone) in [10, 11]
 
 def load_keywords_from_file():
     """Load dynamic keywords from a file."""
@@ -656,33 +671,82 @@ async def chat_endpoint(request: Request):
 
         # Parse request data
         data = await request.json()
-        raw_question = data.get("message", "").strip()
+        raw_message = data.get("message", "").strip()
         session_id = data.get("session_id", "default")
 
-        if not raw_question:
+        if not raw_message:
             logger.warning("Received an empty message.")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-        # Preprocess query and resolve ambiguous references using session context
-        question = preprocess_query(raw_question, session_id)
-
-        # Manage sessions
+        # Initialize session if new
         if session_id not in session_memory:
             if len(session_memory) >= MAX_SESSIONS:
-                evict_oldest_sessions()  # Evict sessions if limit is exceeded
+                evict_oldest_sessions()
+            session_memory[session_id] = {
+                "history": [],
+                "context": "",
+                "pending_questions": INITIAL_QUESTIONS.copy(),
+                "user_info": {}
+            }
             logger.info(f"New session initialized: {session_id}")
-            session_memory[session_id] = {"history": [], "context": ""}
+
+        session = session_memory[session_id]
+
+        # Handle pending initial questions
+        if session["pending_questions"]:
+            next_question = session["pending_questions"].pop(0)
+
+            # Save the response to the previous question if applicable
+            if session["history"]:
+                last_question = session["history"][-1]["response"]
+                if last_question in INITIAL_QUESTIONS:
+                    key = last_question.lower().replace(" ", "_").replace("?", "")
+                    session["user_info"][key] = raw_message
+
+                    # Validate specific responses
+                    if "email" in last_question.lower() and not validate_email(raw_message):
+                        return {"answer": "Invalid email. Please provide a valid email address."}
+                    if "phone" in last_question.lower() and not validate_phone(raw_message):
+                        return {"answer": "Invalid phone number. Please provide a valid phone number."}
+
+            # Add the next question to the session history and return it
+            session["history"].append({
+                "query": raw_message,
+                "response": next_question,
+                "timestamp": datetime.now()
+            })
+
+            return {
+                "answer": next_question,
+                "confidence": 1.0,
+                "source": "predefined_questions",
+                "response_time": f"{time.time() - start_time:.2f} seconds",
+            }
+
+        # All initial questions answered, summarize user info
+        if not session["pending_questions"] and not session.get("summary_shown", False):
+            session["summary_shown"] = True
+            return {
+                "answer": f"Thank you! Here's what I collected: {session['user_info']}. "
+                          f"You can now ask your queries.",
+                "confidence": 1.0,
+                "source": "summary",
+                "response_time": f"{time.time() - start_time:.2f} seconds",
+            }
+
+        # Preprocess query and resolve ambiguous references using session context
+        question = preprocess_query(raw_message, session_id)
 
         # Step 1: Add the query to session memory with a placeholder response
-        session_memory[session_id]["history"].append({
-            "query": raw_question,  # Store the raw user query
+        session["history"].append({
+            "query": raw_message,
             "response": "Processing...",
             "timestamp": datetime.now()
         })
 
         # Limit history to the last 5 interactions
-        if len(session_memory[session_id]["history"]) > 5:
-            session_memory[session_id]["history"].pop(0)
+        if len(session["history"]) > 5:
+            session["history"].pop(0)
 
         # Step 2: Compute query embedding
         user_embedding = compute_embedding(question)
@@ -691,7 +755,7 @@ async def chat_endpoint(request: Request):
         cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
-            update_session_context(session_id, raw_question, cached_answer)
+            update_session_context(session_id, raw_message, cached_answer)
             return {
                 "answer": cached_answer,
                 "confidence": float(cached_similarity),
@@ -719,7 +783,7 @@ async def chat_endpoint(request: Request):
             CACHE[question] = (user_embedding, refined_answer)
 
             # Update session context with query and refined answer
-            update_session_context(session_id, raw_question, refined_answer)
+            update_session_context(session_id, raw_message, refined_answer)
 
             return {
                 "answer": refined_answer,
@@ -736,7 +800,7 @@ async def chat_endpoint(request: Request):
         CACHE[question] = (user_embedding, fallback_response)
 
         # Update session context with query and fallback response
-        update_session_context(session_id, raw_question, fallback_response)
+        update_session_context(session_id, raw_message, fallback_response)
 
         return {
             "answer": fallback_response,
