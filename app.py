@@ -737,7 +737,7 @@ async def chat_endpoint(request: Request):
         # Preprocess query and resolve ambiguous references using session context
         question = preprocess_query(raw_message, session_id)
 
-        # Step 1: Add the query to session memory with a placeholder response
+        # Add query to session memory
         session["history"].append({
             "query": raw_message,
             "response": "Processing...",
@@ -748,10 +748,10 @@ async def chat_endpoint(request: Request):
         if len(session["history"]) > 5:
             session["history"].pop(0)
 
-        # Step 2: Compute query embedding
+        # Step 1: Compute query embedding
         user_embedding = compute_embedding(question)
 
-        # Step 3: Cache Lookup
+        # Step 2: Cache Lookup
         cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
@@ -763,7 +763,7 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 4: Database Search for Best Match
+        # Step 3: Database Search for Best Match
         db_answer, confidence, source = query_validated_qa(user_embedding, question)
 
         if db_answer and confidence >= 0.5:  # Database confidence threshold
@@ -792,7 +792,7 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 5: Enhanced Fallback Response
+        # Step 4: Enhanced Fallback Response
         fallback_response = enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
 
