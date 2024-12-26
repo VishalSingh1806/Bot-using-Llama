@@ -14,6 +14,7 @@ from threading import Lock
 import uuid
 import torch
 import numpy as np
+import asyncio 
 from spacy.lang.en.stop_words import STOP_WORDS
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
@@ -319,7 +320,7 @@ def release_db_connection(conn: Connection):
         logger.warning(f"Failed to release database connection: {e}")
 
 
-def compute_embedding(text: str):
+async def compute_embedding(text: str):
     """Compute embedding for a given text using Sentence-BERT."""
     try:
         # Check cache for the embedding
@@ -329,7 +330,8 @@ def compute_embedding(text: str):
 
         # Compute new embedding if not cached
         model = load_sentence_bert()
-        embedding = model.encode(text).reshape(1, -1)
+        embedding = await asyncio.to_thread(model.encode, text)  # Offload to a separate thread for blocking calls
+        embedding = embedding.reshape(1, -1)
         embedding_cache[text] = embedding  # Cache the computed embedding
         logger.info(f"Computed embedding for text: {text}")
         return embedding
@@ -432,7 +434,7 @@ def save_keywords_to_file():
         logger.error(f"Failed to save keywords to file: {e}")
 
 
-def query_validated_qa(user_embedding, question: str):
+async def query_validated_qa(user_embedding, question: str):
     """Query the ValidatedQA table for the best match."""
     try:
         conn = connect_db()
@@ -440,8 +442,9 @@ def query_validated_qa(user_embedding, question: str):
         start_time = time.time()
 
         # Fetch only required columns to minimize data transfer
-        cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA")
-        rows = cursor.fetchall()
+        rows = await asyncio.to_thread(
+            lambda: cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA").fetchall()
+        )
 
         max_similarity = 0.0
         best_match = None
@@ -476,6 +479,7 @@ def query_validated_qa(user_embedding, question: str):
             release_db_connection(conn)
         except UnboundLocalError:
             pass  # Connection was not established
+
 
 
 def fuzzy_match_fallback(question: str) -> str:
@@ -532,7 +536,7 @@ def adaptive_fuzzy_match(question: str, threshold=80) -> str:
         return None
 
 
-def enhanced_fallback_response(question: str, session_id: str) -> str:
+async def enhanced_fallback_response(question: str, session_id: str) -> str:
     """
     Enhanced fallback response with adaptive fuzzy matching and session context handling.
     """
@@ -755,11 +759,9 @@ def evict_oldest_sessions():
 
 
 @app.post("/chat")
-@REQUEST_LATENCY.time()
 async def chat_endpoint(request: Request):
+    start_time = time.time()  # Measure response time
     try:
-        start_time = time.time()  # Measure response time
-
         # Parse request data
         data = await request.json()
         raw_question = data.get("message", "").strip()
@@ -772,7 +774,7 @@ async def chat_endpoint(request: Request):
 
         # Key for session in Redis
         session_key = f"session:{session_id}"
-        session_data = redis_client.hgetall(session_key)
+        session_data = await asyncio.to_thread(redis_client.hgetall, session_key)
 
         # Initialize session if it doesn't exist
         if not session_data:
@@ -796,36 +798,38 @@ async def chat_endpoint(request: Request):
         session_data["last_interaction"] = datetime.utcnow().isoformat()
 
         # Save session data to Redis
-        redis_client.hmset(session_key, session_data)
-        redis_client.expire(session_key, int(SESSION_TIMEOUT.total_seconds()))
+        await asyncio.to_thread(redis_client.hmset, session_key, session_data)
+        await asyncio.to_thread(redis_client.expire, session_key, int(SESSION_TIMEOUT.total_seconds()))
 
         # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
 
         # Step 2: Compute query embedding
-        user_embedding = compute_embedding(question)  # `compute_embedding` is synchronous, no need for `await`
+        user_embedding = await compute_embedding(question)
 
         # Step 3: Cache lookup using Redis
-        cached_answer, cached_similarity = cache_lookup(user_embedding)
+        cached_answer, cached_similarity = await cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
             # Update session context with cached answer
             update_session_context(session_id, raw_question, cached_answer)
-            return {
-                "answer": cached_answer,
-                "confidence": float(cached_similarity),
-                "source": "cache",
-                "response_time": f"{time.time() - start_time:.2f} seconds",
-            }
+            return JSONResponse(
+                content={
+                    "answer": cached_answer,
+                    "confidence": float(cached_similarity),
+                    "source": "cache",
+                    "response_time": f"{time.time() - start_time:.2f} seconds",
+                }
+            )
 
         # Step 4: Database search for the best match
-        db_answer, confidence, source = query_validated_qa(user_embedding, question)  # Ensure synchronous execution
-        if db_answer and confidence >= 0.5:  # Threshold for database match
+        db_answer, confidence, source = await query_validated_qa(user_embedding, question)
+        if db_answer and confidence >= 0.5:
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
 
             # Refine the response with LLaMA
             try:
-                refined_answer = refine_with_llama(question, db_answer)
+                refined_answer = await refine_with_llama(question, db_answer)
                 if not refined_answer:
                     logger.warning(f"LLaMA returned an empty response for session {session_id}. Using database answer.")
                     refined_answer = db_answer
@@ -834,7 +838,8 @@ async def chat_endpoint(request: Request):
                 refined_answer = db_answer
 
             # Cache the refined response in Redis
-            redis_client.hset(
+            await asyncio.to_thread(
+                redis_client.hset,
                 "query_cache",
                 question,
                 json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
@@ -843,19 +848,22 @@ async def chat_endpoint(request: Request):
             # Update session context with the refined answer
             update_session_context(session_id, raw_question, refined_answer)
 
-            return {
-                "answer": refined_answer,
-                "confidence": float(confidence),
-                "source": source,
-                "response_time": f"{time.time() - start_time:.2f} seconds",
-            }
+            return JSONResponse(
+                content={
+                    "answer": refined_answer,
+                    "confidence": float(confidence),
+                    "source": source,
+                    "response_time": f"{time.time() - start_time:.2f} seconds",
+                }
+            )
 
         # Step 5: Enhanced fallback response
-        fallback_response = enhanced_fallback_response(question, session_id)  # Ensure synchronous execution
+        fallback_response = await enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
 
         # Cache the fallback response in Redis
-        redis_client.hset(
+        await asyncio.to_thread(
+            redis_client.hset,
             "query_cache",
             question,
             json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
@@ -864,12 +872,14 @@ async def chat_endpoint(request: Request):
         # Update session context with fallback response
         update_session_context(session_id, raw_question, fallback_response)
 
-        return {
-            "answer": fallback_response,
-            "confidence": 0.5,
-            "source": "fuzzy fallback",
-            "response_time": f"{time.time() - start_time:.2f} seconds",
-        }
+        return JSONResponse(
+            content={
+                "answer": fallback_response,
+                "confidence": 0.5,
+                "source": "fuzzy fallback",
+                "response_time": f"{time.time() - start_time:.2f} seconds",
+            }
+        )
 
     except HTTPException as e:
         logger.warning(f"HTTP error occurred: {e.detail}")
@@ -879,3 +889,5 @@ async def chat_endpoint(request: Request):
         logger.exception("Unhandled exception in /chat endpoint.")
         ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
+    finally:
+        REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
