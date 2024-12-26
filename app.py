@@ -5,6 +5,7 @@ import json
 import time
 import logging
 import sqlite3  
+import psycopg2
 from sqlite3 import Connection
 from datetime import datetime, timedelta
 from functools import lru_cache
