@@ -1,38 +1,41 @@
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
-from accelerate import infer_auto_device_map, init_empty_weights
-import sqlite3
-import psycopg2
-import numpy as np
-import spacy
-from spacy.lang.en.stop_words import STOP_WORDS
-from datetime import datetime, timedelta
-from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer
-from rapidfuzz import fuzz, process
-import json
-import re
-import logging
+# Standard Library Imports
 import os
+import re
+import json
 import time
-from apscheduler.schedulers.background import BackgroundScheduler
-import uuid
+import logging
+import sqlite3  
+from sqlite3 import Connection
+from datetime import datetime, timedelta
 from functools import lru_cache
 from collections import defaultdict
+from queue import Queue
+from threading import Lock
+import uuid
+import torch
+import numpy as np
+from spacy.lang.en.stop_words import STOP_WORDS
+from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+from spacy import load as spacy_load
+from rapidfuzz import fuzz, process
+from accelerate import infer_auto_device_map, init_empty_weights
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from apscheduler.schedulers.background import BackgroundScheduler
+import redis
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from prometheus_client import Summary, Counter, start_http_server, generate_latest, CONTENT_TYPE_LATEST
+from logging.handlers import RotatingFileHandler
+
 
 
 SESSION_TIMEOUT = timedelta(hours=1)
 
-INITIAL_QUESTIONS = [
-    "What is your name?",
-    "What is your email?",
-    "What is your phone number?",
-    "What is your organization name?"
-]
+# Load spaCy model globally during startup
+nlp = spacy_load("en_core_web_sm")
 
 # Modify the session memory structure
 session_memory = defaultdict(lambda: {"history": [], "context": ""})  # Session structure
@@ -49,48 +52,60 @@ CACHE_THRESHOLD = 0.9  # Minimum similarity for cache retrieval
 # Cache for dynamic query embeddings
 embedding_cache = {}
 
-# Load spaCy model globally during startup
-nlp = spacy.load("en_core_web_sm")
 
 # Define clean_expired_sessions before using it in the scheduler
 def clean_expired_sessions():
-    """Clean expired sessions based on the SESSION_TIMEOUT."""
+    """Clean expired sessions using Redis TTL."""
     try:
-        now = datetime.now()
-        expired_sessions = []
-
-        # Iterate through all sessions
-        for session_id, interactions in list(session_memory.items()):
-            if not interactions:
-                continue
-            # Check if the last interaction in the session is older than the timeout
-            if now - interactions[-1]["timestamp"] > SESSION_TIMEOUT:
-                expired_sessions.append(session_id)
-                del session_memory[session_id]
-
-        # Log cleaned sessions
-        if expired_sessions:
-            logger.info(f"Cleaned expired sessions: {expired_sessions}")
-        else:
-            logger.info("No expired sessions found during clean-up.")
+        keys = redis_client.keys("session:*")  # Fetch all session keys
+        for key in keys:
+            ttl = redis_client.ttl(key)  # Get time-to-live for the key
+            if ttl == -2:  # Key does not exist (expired)
+                redis_client.delete(key)
+        logger.info("Expired sessions cleaned up successfully.")
     except Exception as e:
-        logger.exception("Error during session clean-up")
+        logger.exception("Error during session cleanup.")
+
         
 scheduler = BackgroundScheduler()
 scheduler.add_job(clean_expired_sessions, 'interval', hours=1)
 scheduler.start()
 
-# Configure logging
-LOG_LEVEL = logging.INFO  # Set to DEBUG for detailed logs in development
+
+# Prometheus metrics
+REQUEST_LATENCY = Summary('request_latency_seconds', 'Latency of HTTP requests')
+ERROR_COUNT = Counter('error_count', 'Total number of errors')
+
+# Start Prometheus server
+start_http_server(9100)  # Exposes metrics on http://localhost:9100
+
+
+# Logging configuration with rotation
+LOG_LEVEL = logging.INFO
 logging.basicConfig(
     level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("app_log.log"),
+        RotatingFileHandler("app_log.log", maxBytes=10 * 1024 * 1024, backupCount=5),  # 10 MB per file, 5 backups
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger("EPR_Chatbot")
+
+# Redis configuration
+REDIS_HOST = "localhost"
+REDIS_PORT = 6379
+REDIS_DB = 0
+
+# Initialize Redis client
+try:
+    redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
+    redis_client.ping()
+    logger.info("Connected to Redis successfully.")
+except redis.ConnectionError as e:
+    logger.error("Failed to connect to Redis.")
+    raise RuntimeError("Redis connection failed.") from e
+
 
 
 # Predefined openings
@@ -172,6 +187,13 @@ async def lifespan(app: FastAPI):
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
 
+# Route to expose Prometheus metrics via FastAPI
+@app.get("/metrics")
+async def metrics():
+    """Expose Prometheus metrics via FastAPI."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    
+
 # Directory paths
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_FILES_DIR = os.path.join(CURRENT_DIR, "static")
@@ -240,22 +262,62 @@ def preprocess_query(query, session_id):
 
     return query
 
+class SQLiteConnectionPool:
+    """Connection Pool to manage SQLite connections efficiently."""
+    def __init__(self, db_path: str, pool_size: int = 5):
+        self.db_path = db_path
+        self.pool = Queue(maxsize=pool_size)
+        self.lock = Lock()
 
-# Updated connect_db function for PostgreSQL
-def connect_db():
-    """Connect to the GCP PostgreSQL database."""
+        # Pre-populate the pool
+        for _ in range(pool_size):
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            self.pool.put(conn)
+
+    def get_connection(self) -> Connection:
+        """Get a connection from the pool."""
+        with self.lock:
+            if not self.pool.empty():
+                return self.pool.get()
+            # If the pool is empty, create a new connection
+            return sqlite3.connect(self.db_path, check_same_thread=False)
+
+    def release_connection(self, conn: Connection):
+        """Release a connection back to the pool."""
+        with self.lock:
+            if not self.pool.full():
+                self.pool.put(conn)
+            else:
+                conn.close()  # Close the connection if the pool is full
+
+    def close_all_connections(self):
+        """Close all connections in the pool."""
+        with self.lock:
+            while not self.pool.empty():
+                conn = self.pool.get()
+                conn.close()
+
+
+# Initialize the SQLite connection pool
+DB_POOL = SQLiteConnectionPool(DB_PATH)
+
+
+# Utility functions
+def connect_db() -> Connection:
+    """Fetch a connection from the pool."""
     try:
-        conn = psycopg2.connect(
-            dbname="epr_database",
-            user="postgres",
-            password="Tech123",
-            host="34.100.134.186",
-            port="5432"
-        )
-        return conn
-    except psycopg2.Error as e:
-        logger.error(f"Database connection error: {e}")
+        return DB_POOL.get_connection()
+    except Exception as e:
+        logger.error(f"Failed to get database connection: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed.")
+
+def release_db_connection(conn: Connection):
+    """Release the connection back to the pool."""
+    try:
+        DB_POOL.release_connection(conn)
+    except Exception as e:
+        logger.warning(f"Failed to release database connection: {e}")
+
 
 def compute_embedding(text: str):
     """Compute embedding for a given text using Sentence-BERT."""
@@ -300,16 +362,8 @@ def is_query_relevant(query: str, threshold: float = 0.7) -> bool:
     except Exception as e:
         logger.exception("Error in is_query_relevant")
         raise
-        
-def validate_email(email: str) -> bool:
-    """Validate email format."""
-    import re
-    pattern = r"[^@]+@[^@]+\.[^@]+"
-    return re.match(pattern, email) is not None
 
-def validate_phone(phone: str) -> bool:
-    """Validate phone number format."""
-    return phone.isdigit() and len(phone) in [10, 11]
+        
 
 def load_keywords_from_file():
     """Load dynamic keywords from a file."""
@@ -379,45 +433,49 @@ def save_keywords_to_file():
 
 
 def query_validated_qa(user_embedding, question: str):
-    """Query the ValidatedQA table for the best match, including related sections."""
+    """Query the ValidatedQA table for the best match."""
     try:
         conn = connect_db()
         cursor = conn.cursor()
-        
-        # Fetch QA pairs with embeddings and section IDs
-        cursor.execute("SELECT id, question, answer, question_embedding, section_id FROM ValidatedQA")
-        qa_pairs = cursor.fetchall()
+        start_time = time.time()
+
+        # Fetch only required columns to minimize data transfer
+        cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA")
+        rows = cursor.fetchall()
 
         max_similarity = 0.0
         best_match = None
-        best_section = None
 
-        for qa_id, db_question, db_answer, db_question_embedding, section_id in qa_pairs:
-            question_vector = np.frombuffer(db_question_embedding, dtype=np.float32).reshape(1, -1)
+        for row in rows:
+            question_vector = np.frombuffer(row[2], dtype=np.float32).reshape(1, -1)
             similarity = cosine_similarity(user_embedding, question_vector)[0][0]
             if similarity > max_similarity:
                 max_similarity = similarity
-                best_match = (qa_id, db_answer, section_id)
+                best_match = row[1]  # Answer
+
+        query_duration = time.time() - start_time
+        logger.info(f"Database query completed in {query_duration:.2f} seconds")
+
+        release_db_connection(conn)  # Return the connection to the pool
 
         if best_match:
-            qa_id, db_answer, section_id = best_match
-            # Fetch section content if section_id is available
-            if section_id:
-                cursor.execute("SELECT content FROM Sections WHERE id = %s", (section_id,))
-                section_result = cursor.fetchone()
-                best_section = section_result[0] if section_result else None
-
-        conn.close()
-
-        if best_match:
-            # Combine answer with section content for a comprehensive response
-            combined_answer = f"{db_answer}\n\nAdditional Context:\n{best_section}" if best_section else db_answer
-            return combined_answer, max_similarity, "database"
+            logger.debug(f"Database match found with similarity {max_similarity:.2f}")
         else:
-            return None, 0.0, None
-    except psycopg2.Error as e:
+            logger.debug("No database match found for the query.")
+
+        return best_match, max_similarity, "database"
+    except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
         return None, 0.0, None
+    except Exception as ex:
+        logger.exception(f"Unexpected error in query_validated_qa: {ex}")
+        return None, 0.0, None
+    finally:
+        # Ensure connection release in case of unexpected errors
+        try:
+            release_db_connection(conn)
+        except UnboundLocalError:
+            pass  # Connection was not established
 
 
 def fuzzy_match_fallback(question: str) -> str:
@@ -450,12 +508,11 @@ def adaptive_fuzzy_match(question: str, threshold=80) -> str:
     Dynamically adjusts thresholds based on query complexity and context.
     """
     try:
-        # Analyze query complexity (e.g., length, presence of keywords)
         query_length = len(question.split())
         contains_keywords = any(keyword in question.lower() for keyword in DYNAMIC_KEYWORDS)
         adjusted_threshold = threshold - 10 if contains_keywords else threshold
 
-        # Attempt fuzzy matching against the knowledge base
+        # Attempt fuzzy matching against the fallback KB
         result = process.extractOne(question, FALLBACK_KB.keys(), scorer=fuzz.ratio)
         if result:
             match, score = result[0], result[1]
@@ -476,44 +533,51 @@ def adaptive_fuzzy_match(question: str, threshold=80) -> str:
 
 
 def enhanced_fallback_response(question: str, session_id: str) -> str:
+    """
+    Enhanced fallback response with adaptive fuzzy matching and session context handling.
+    """
     try:
-        # 1. Attempt fuzzy matching against the knowledge base
+        # Step 1: Attempt adaptive fuzzy matching
         response = adaptive_fuzzy_match(question)
         if response:
             return response
 
-        # 2. Check recent session memory for context-based matching
-        if session_id in session_memory and session_memory[session_id]:
+        # Step 2: Use session memory for context-aware matching
+        if session_id in session_memory and session_memory[session_id]["history"]:
             context_match = process.extractOne(
                 question,
-                [interaction["query"] for interaction in session_memory[session_id]],
+                [interaction["query"] for interaction in session_memory[session_id]["history"]],
                 scorer=fuzz.ratio
             )
-            if context_match and context_match[1] >= 70:  # Lower threshold for session context
-                # Avoid self-repetition
-                if context_match[0] != question:
-                    return f"I'm not sure, but here's something related: {context_match[0]}"
+            if context_match and context_match[1] >= 70:  # Adjust threshold for context
+                logger.info(f"Context match found: {context_match[0]} with score {context_match[1]}")
+                return f"I'm not sure, but here's something related: {context_match[0]}"
 
-        # 3. Provide a generic fallback response
+        # Step 3: Provide a generic fallback response
         logger.info("Using generic fallback response.")
         return "I'm sorry, I couldn't find relevant information. Could you rephrase or ask something else?"
     except Exception as e:
         logger.exception("Error during enhanced fallback response generation.")
         return "I encountered an issue while finding the best response. Please try again."
 
-
 def refine_with_llama(question: str, db_answer: str) -> str:
     """
     Refine the database answer using the LLaMA model to provide a concise and direct response.
+    Explicitly define EPR as Extended Producer Responsibility for better contextual understanding.
     """
     try:
+        # Ensure the model and tokenizer are loaded
+        if llama_model is None or llama_tokenizer is None:
+            logger.error("LLaMA model or tokenizer not loaded.")
+            raise RuntimeError("LLaMA model or tokenizer is not initialized.")
+
         # Explicitly define EPR in the prompt
         epr_definition = (
             "EPR stands for Extended Producer Responsibility, which is a policy approach where producers are responsible "
             "for the treatment or disposal of post-consumer products. It focuses on plastic waste management and compliance rules."
         )
 
-        # Include section context in the refinement
+        # Generate a concise rephrased response
         prompt = (
             f"{epr_definition}\n\n"
             f"Question: {question}\n"
@@ -521,23 +585,35 @@ def refine_with_llama(question: str, db_answer: str) -> str:
             "Rephrased Response:"
         )
 
+        # Tokenize inputs and align them with the model's device
         inputs = llama_tokenizer(prompt, return_tensors="pt")
         inputs = {key: val.to(llama_model.device) for key, val in inputs.items()}
 
+        # Generate the refined response
         outputs = llama_model.generate(
             **inputs,
-            max_new_tokens=130,
+            max_new_tokens=130,  # Limit the response length
             do_sample=True,
             top_k=50,
             temperature=0.7
         )
 
+        # Decode and clean the response
         refined_response = llama_tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-        return refined_response.split("Rephrased Response:")[-1].strip()
-    except Exception as e:
-        logger.error(f"Error refining response with LLaMA: {e}")
-        return db_answer
 
+        # Extract only the rephrased response
+        if "Rephrased Response:" in refined_response:
+            refined_response = refined_response.split("Rephrased Response:")[-1].strip()
+
+        logger.info("LLaMA refinement successful.")
+        return refined_response
+
+    except RuntimeError as e:
+        logger.error(f"Runtime error during LLaMA refinement: {e}")
+        return db_answer  # Fallback to original database answer
+    except Exception as e:
+        logger.exception("Error refining response with LLaMA")
+        return db_answer  # Fallback to original database answer
 
 
 def build_memory_context(session_id):
@@ -596,48 +672,62 @@ async def health_check():
     return {"status": "ok"}
 
 def test_db_connection():
-    """Test database connection and structure."""
+    """Test the database connection and ensure tables exist."""
     try:
-        # Attempt to connect to the database
-        conn = sqlite3.connect(DB_PATH)
+        conn = connect_db()
         cursor = conn.cursor()
 
-        # Check tables in the database
+        # Check the existence of tables
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = cursor.fetchall()
-        print("Tables in the database:", tables)
+        logger.info(f"Tables in the database: {tables}")
 
-        # Verify structure of the `ValidatedQA` table
+        # Check `ValidatedQA` table structure
         if ("ValidatedQA",) in tables:
             cursor.execute("PRAGMA table_info(ValidatedQA);")
             columns = cursor.fetchall()
-            print("Columns in ValidatedQA table:", columns)
+            logger.info(f"Columns in ValidatedQA table: {columns}")
         else:
-            print("ValidatedQA table not found in the database.")
+            logger.warning("ValidatedQA table not found in the database.")
 
-        conn.close()
-    except sqlite3.DatabaseError as e:
-        print("Database connection error:", e)
+        release_db_connection(conn)
+    except sqlite3.Error as e:
+        logger.error(f"Database connection test failed: {e}")
     except Exception as ex:
-        print("Unexpected error:", ex)
+        logger.exception(f"Unexpected error during database connection test: {ex}")
 
 def cache_lookup(query_embedding):
-    """Look up the cache for a similar question and its answer."""
-    max_similarity = 0.0
-    best_answer = None
+    """
+    Look up the cache for a similar question and its answer from Redis or in-memory cache.
+    Returns the best match and its similarity score.
+    """
+    try:
+        # Use Redis for cache lookup
+        cached_items = redis_client.hgetall("query_cache")
+        max_similarity = 0.0
+        best_answer = None
 
-    for cached_question, (cached_embedding, cached_answer) in CACHE.items():
-        similarity = cosine_similarity(query_embedding, cached_embedding)[0][0]
-        if similarity > max_similarity:
-            max_similarity = similarity
-            best_answer = cached_answer
+        for cached_question, cached_data in cached_items.items():
+            cached_data = json.loads(cached_data)  # Deserialize Redis JSON
+            cached_embedding = np.array(cached_data["embedding"])
+            cached_answer = cached_data["answer"]
 
-    if best_answer:
-        logger.debug(f"Cache hit with similarity {max_similarity:.2f}")
-    else:
-        logger.debug("Cache miss for the query.")
+            # Calculate similarity
+            similarity = cosine_similarity(query_embedding, cached_embedding.reshape(1, -1))[0][0]
+            if similarity > max_similarity:
+                max_similarity = similarity
+                best_answer = cached_answer
 
-    return best_answer, max_similarity
+        if best_answer:
+            logger.info(f"Cache hit with similarity {max_similarity:.2f}")
+        else:
+            logger.info("Cache miss for the query.")
+        return best_answer, max_similarity
+
+    except Exception as e:
+        logger.exception("Error during cache lookup")
+        return None, 0.0
+
 
 
 # Configuration for maximum session management
@@ -665,97 +755,62 @@ def evict_oldest_sessions():
 
 
 @app.post("/chat")
+@REQUEST_LATENCY.time()
 async def chat_endpoint(request: Request):
     try:
-        start_time = time.time()
+        start_time = time.time()  # Measure response time
 
         # Parse request data
         data = await request.json()
-        raw_message = data.get("message", "").strip()
-        session_id = data.get("session_id", "default")
+        raw_question = data.get("message", "").strip()
+        session_id = data.get("session_id", str(uuid.uuid4()))  # Generate session ID if not provided
 
-        if not raw_message:
-            logger.warning("Received an empty message.")
+        if not raw_question:
+            logger.warning("Empty message received.")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
+        logger.info(f"Session {session_id}: Received question: {raw_question}")
 
-        # Initialize session if new
-        if session_id not in session_memory:
-            if len(session_memory) >= MAX_SESSIONS:
-                evict_oldest_sessions()
-            session_memory[session_id] = {
-                "history": [],
+        # Key for session in Redis
+        session_key = f"session:{session_id}"
+        session_data = redis_client.hgetall(session_key)
+
+        # Initialize session if it doesn't exist
+        if not session_data:
+            session_data = {
+                "history": json.dumps([]),  # Store history as JSON string
                 "context": "",
-                "pending_questions": INITIAL_QUESTIONS.copy(),
-                "user_info": {}
+                "last_interaction": datetime.utcnow().isoformat(),
             }
             logger.info(f"New session initialized: {session_id}")
 
-        session = session_memory[session_id]
-
-        # Handle pending initial questions
-        if session["pending_questions"]:
-            next_question = session["pending_questions"].pop(0)
-
-            # Save the response to the previous question if applicable
-            if session["history"]:
-                last_question = session["history"][-1]["response"]
-                if last_question in INITIAL_QUESTIONS:
-                    key = last_question.lower().replace(" ", "_").replace("?", "")
-                    session["user_info"][key] = raw_message
-
-                    # Validate specific responses
-                    if "email" in last_question.lower() and not validate_email(raw_message):
-                        return {"answer": "Invalid email. Please provide a valid email address."}
-                    if "phone" in last_question.lower() and not validate_phone(raw_message):
-                        return {"answer": "Invalid phone number. Please provide a valid phone number."}
-
-            # Add the next question to the session history and return it
-            session["history"].append({
-                "query": raw_message,
-                "response": next_question,
-                "timestamp": datetime.now()
-            })
-
-            return {
-                "answer": next_question,
-                "confidence": 1.0,
-                "source": "predefined_questions",
-                "response_time": f"{time.time() - start_time:.2f} seconds",
+        # Update session history
+        history = json.loads(session_data.get("history", "[]"))
+        history.append(
+            {
+                "query": raw_question,
+                "response": "Processing...",
+                "timestamp": datetime.utcnow().isoformat(),
             }
+        )
+        session_data["history"] = json.dumps(history)
+        session_data["last_interaction"] = datetime.utcnow().isoformat()
 
-        # All initial questions answered, summarize user info
-        if not session["pending_questions"] and not session.get("summary_shown", False):
-            session["summary_shown"] = True
-            return {
-                "answer": f"Thank you! Here's what I collected: {session['user_info']}. "
-                          f"You can now ask your queries.",
-                "confidence": 1.0,
-                "source": "summary",
-                "response_time": f"{time.time() - start_time:.2f} seconds",
-            }
+        # Save session data to Redis
+        redis_client.hmset(session_key, session_data)
+        redis_client.expire(session_key, int(SESSION_TIMEOUT.total_seconds()))
 
-        # Preprocess query and resolve ambiguous references using session context
-        question = preprocess_query(raw_message, session_id)
+        # Step 1: Preprocess the query
+        question = preprocess_query(raw_question, session_id)
 
-        # Add query to session memory
-        session["history"].append({
-            "query": raw_message,
-            "response": "Processing...",
-            "timestamp": datetime.now()
-        })
-
-        # Limit history to the last 5 interactions
-        if len(session["history"]) > 5:
-            session["history"].pop(0)
-
-        # Step 1: Compute query embedding
+        # Step 2: Compute query embedding
         user_embedding = compute_embedding(question)
 
-        # Step 2: Cache Lookup
+        # Step 3: Cache lookup using Redis
         cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
-            update_session_context(session_id, raw_message, cached_answer)
+            # Update session context with cached answer
+            update_session_context(session_id, raw_question, cached_answer)
             return {
                 "answer": cached_answer,
                 "confidence": float(cached_similarity),
@@ -763,10 +818,9 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 3: Database Search for Best Match
+        # Step 4: Database search for the best match
         db_answer, confidence, source = query_validated_qa(user_embedding, question)
-
-        if db_answer and confidence >= 0.5:  # Database confidence threshold
+        if db_answer and confidence >= 0.5:  # Threshold for database match
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
 
             # Refine the response with LLaMA
@@ -779,11 +833,15 @@ async def chat_endpoint(request: Request):
                 logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
                 refined_answer = db_answer
 
-            # Update cache with refined answer
-            CACHE[question] = (user_embedding, refined_answer)
+            # Cache the refined response in Redis
+            redis_client.hset(
+                "query_cache",
+                question,
+                json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
+            )
 
-            # Update session context with query and refined answer
-            update_session_context(session_id, raw_message, refined_answer)
+            # Update session context with the refined answer
+            update_session_context(session_id, raw_question, refined_answer)
 
             return {
                 "answer": refined_answer,
@@ -792,15 +850,19 @@ async def chat_endpoint(request: Request):
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
 
-        # Step 4: Enhanced Fallback Response
+        # Step 5: Enhanced fallback response
         fallback_response = enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
 
-        # Update cache with fallback response
-        CACHE[question] = (user_embedding, fallback_response)
+        # Cache the fallback response in Redis
+        redis_client.hset(
+            "query_cache",
+            question,
+            json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
+        )
 
-        # Update session context with query and fallback response
-        update_session_context(session_id, raw_message, fallback_response)
+        # Update session context with fallback response
+        update_session_context(session_id, raw_question, fallback_response)
 
         return {
             "answer": fallback_response,
@@ -811,10 +873,12 @@ async def chat_endpoint(request: Request):
 
     except HTTPException as e:
         logger.warning(f"HTTP error occurred: {e.detail}")
+        ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise e
     except TypeError as te:
         logger.error(f"Serialization error during response: {te}")
         raise HTTPException(status_code=500, detail="Response serialization error.")
     except Exception as e:
         logger.exception("Unhandled exception in /chat endpoint.")
+        ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
