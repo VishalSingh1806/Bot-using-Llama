@@ -354,7 +354,7 @@ reference_queries = [
     "What are EPR compliance rules?",
     "How do I register for EPR compliance?"
 ]
-reference_embeddings = np.vstack([compute_embedding(q) for q in reference_queries])
+reference_embeddings = np.vstack(await asyncio.gather(*(compute_embedding(q) for q in reference_queries)))
 
 
 def is_query_relevant(query: str, threshold: float = 0.7) -> bool:
