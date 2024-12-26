@@ -442,15 +442,15 @@ def save_keywords_to_file():
         logger.error(f"Failed to save keywords to file: {e}")
 
 
-def query_validated_qa(user_embedding, question: str):
-    """Query the ValidatedQA table for the best match, including related sections."""
+async def query_validated_qa(user_embedding, question: str):
+    """Query the ValidatedQA table for the best match."""
     try:
-        conn = connect_db()
-        cursor = conn.cursor()
-        
-        # Fetch QA pairs with embeddings and section IDs
-        cursor.execute("SELECT id, question, answer, question_embedding, section_id FROM ValidatedQA")
-        qa_pairs = cursor.fetchall()
+        conn = await asyncio.to_thread(connect_db)
+        cursor = await asyncio.to_thread(conn.cursor)
+
+        # Fetch QA pairs asynchronously
+        qa_pairs = await asyncio.to_thread(cursor.execute, "SELECT id, question, answer, question_embedding, section_id FROM ValidatedQA")
+        qa_pairs = await asyncio.to_thread(cursor.fetchall)
 
         max_similarity = 0.0
         best_match = None
@@ -467,14 +467,13 @@ def query_validated_qa(user_embedding, question: str):
             qa_id, db_answer, section_id = best_match
             # Fetch section content if section_id is available
             if section_id:
-                cursor.execute("SELECT content FROM Sections WHERE id = %s", (section_id,))
-                section_result = cursor.fetchone()
+                section_result = await asyncio.to_thread(cursor.execute, "SELECT content FROM Sections WHERE id = %s", (section_id,))
+                section_result = await asyncio.to_thread(cursor.fetchone)
                 best_section = section_result[0] if section_result else None
 
-        conn.close()
+        await asyncio.to_thread(conn.close)
 
         if best_match:
-            # Combine answer with section content for a comprehensive response
             combined_answer = f"{db_answer}\n\nAdditional Context:\n{best_section}" if best_section else db_answer
             return combined_answer, max_similarity, "database"
         else:
@@ -482,6 +481,7 @@ def query_validated_qa(user_embedding, question: str):
     except psycopg2.Error as e:
         logger.error(f"Database query error: {e}")
         return None, 0.0, None
+
 
 def fuzzy_match_fallback(question: str) -> str:
     """Use rapidfuzz to find the closest fallback response."""
