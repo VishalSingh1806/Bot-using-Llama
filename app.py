@@ -803,7 +803,7 @@ async def chat_endpoint(request: Request):
         question = preprocess_query(raw_question, session_id)
 
         # Step 2: Compute query embedding
-        user_embedding = compute_embedding(question)
+        user_embedding = await compute_embedding(question)
 
         # Step 3: Cache lookup using Redis
         cached_answer, cached_similarity = cache_lookup(user_embedding)
@@ -819,7 +819,7 @@ async def chat_endpoint(request: Request):
             }
 
         # Step 4: Database search for the best match
-        db_answer, confidence, source = query_validated_qa(user_embedding, question)
+        db_answer, confidence, source = await query_validated_qa(user_embedding, question)
         if db_answer and confidence >= 0.5:  # Threshold for database match
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
 
@@ -851,7 +851,7 @@ async def chat_endpoint(request: Request):
             }
 
         # Step 5: Enhanced fallback response
-        fallback_response = enhanced_fallback_response(question, session_id)
+        fallback_response = await enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
 
         # Cache the fallback response in Redis
