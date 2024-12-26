@@ -79,7 +79,7 @@ REQUEST_LATENCY = Summary('request_latency_seconds', 'Latency of HTTP requests')
 ERROR_COUNT = Counter('error_count', 'Total number of errors')
 
 # Start Prometheus server
-start_http_server(9100)  # Exposes metrics on http://localhost:9100
+start_http_server(9200)  # Exposes metrics on http://localhost:9100
 
 
 # Logging configuration with rotation
