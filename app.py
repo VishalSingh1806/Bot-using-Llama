@@ -304,12 +304,19 @@ DB_POOL = SQLiteConnectionPool(DB_PATH)
 
 
 # Utility functions
-def connect_db() -> Connection:
-    """Fetch a connection from the pool."""
+def connect_db():
+    """Connect to the GCP PostgreSQL database."""
     try:
-        return DB_POOL.get_connection()
-    except Exception as e:
-        logger.error(f"Failed to get database connection: {e}")
+        conn = psycopg2.connect(
+            dbname="epr_database",
+            user="postgres",
+            password="Tech123",
+            host="34.100.134.186",
+            port="5432"
+        )
+        return conn
+    except psycopg2.Error as e:
+        logger.error(f"Database connection error: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed.")
 
 def release_db_connection(conn: Connection):
@@ -434,53 +441,46 @@ def save_keywords_to_file():
         logger.error(f"Failed to save keywords to file: {e}")
 
 
-async def query_validated_qa(user_embedding, question: str):
-    """Query the ValidatedQA table for the best match."""
+def query_validated_qa(user_embedding, question: str):
+    """Query the ValidatedQA table for the best match, including related sections."""
     try:
         conn = connect_db()
         cursor = conn.cursor()
-        start_time = time.time()
-
-        # Fetch only required columns to minimize data transfer
-        rows = await asyncio.to_thread(
-            lambda: cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA").fetchall()
-        )
+        
+        # Fetch QA pairs with embeddings and section IDs
+        cursor.execute("SELECT id, question, answer, question_embedding, section_id FROM ValidatedQA")
+        qa_pairs = cursor.fetchall()
 
         max_similarity = 0.0
         best_match = None
+        best_section = None
 
-        for row in rows:
-            question_vector = np.frombuffer(row[2], dtype=np.float32).reshape(1, -1)
+        for qa_id, db_question, db_answer, db_question_embedding, section_id in qa_pairs:
+            question_vector = np.frombuffer(db_question_embedding, dtype=np.float32).reshape(1, -1)
             similarity = cosine_similarity(user_embedding, question_vector)[0][0]
             if similarity > max_similarity:
                 max_similarity = similarity
-                best_match = row[1]  # Answer
-
-        query_duration = time.time() - start_time
-        logger.info(f"Database query completed in {query_duration:.2f} seconds")
-
-        release_db_connection(conn)  # Return the connection to the pool
+                best_match = (qa_id, db_answer, section_id)
 
         if best_match:
-            logger.debug(f"Database match found with similarity {max_similarity:.2f}")
-        else:
-            logger.debug("No database match found for the query.")
+            qa_id, db_answer, section_id = best_match
+            # Fetch section content if section_id is available
+            if section_id:
+                cursor.execute("SELECT content FROM Sections WHERE id = %s", (section_id,))
+                section_result = cursor.fetchone()
+                best_section = section_result[0] if section_result else None
 
-        return best_match, max_similarity, "database"
-    except sqlite3.Error as e:
+        conn.close()
+
+        if best_match:
+            # Combine answer with section content for a comprehensive response
+            combined_answer = f"{db_answer}\n\nAdditional Context:\n{best_section}" if best_section else db_answer
+            return combined_answer, max_similarity, "database"
+        else:
+            return None, 0.0, None
+    except psycopg2.Error as e:
         logger.error(f"Database query error: {e}")
         return None, 0.0, None
-    except Exception as ex:
-        logger.exception(f"Unexpected error in query_validated_qa: {ex}")
-        return None, 0.0, None
-    finally:
-        # Ensure connection release in case of unexpected errors
-        try:
-            release_db_connection(conn)
-        except UnboundLocalError:
-            pass  # Connection was not established
-
-
 
 def fuzzy_match_fallback(question: str) -> str:
     """Use rapidfuzz to find the closest fallback response."""
@@ -676,26 +676,26 @@ async def health_check():
     return {"status": "ok"}
 
 def test_db_connection():
-    """Test the database connection and ensure tables exist."""
+    """Test database connection and structure."""
     try:
         conn = connect_db()
         cursor = conn.cursor()
-
-        # Check the existence of tables
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        
+        # Check tables in the database
+        cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';")
         tables = cursor.fetchall()
         logger.info(f"Tables in the database: {tables}")
 
-        # Check `ValidatedQA` table structure
+        # Verify structure of the `ValidatedQA` table
         if ("ValidatedQA",) in tables:
-            cursor.execute("PRAGMA table_info(ValidatedQA);")
+            cursor.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'ValidatedQA';")
             columns = cursor.fetchall()
             logger.info(f"Columns in ValidatedQA table: {columns}")
         else:
             logger.warning("ValidatedQA table not found in the database.")
 
-        release_db_connection(conn)
-    except sqlite3.Error as e:
+        conn.close()
+    except psycopg2.Error as e:
         logger.error(f"Database connection test failed: {e}")
     except Exception as ex:
         logger.exception(f"Unexpected error during database connection test: {ex}")
