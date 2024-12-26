@@ -772,7 +772,7 @@ async def chat_endpoint(request: Request):
 
         # Key for session in Redis
         session_key = f"session:{session_id}"
-        session_data = redis_client.hgetall(session_key)
+        session_data = redis_client.hgetall(session_key) if redis_client else {}
 
         # Initialize session if it doesn't exist
         if not session_data:
@@ -795,18 +795,19 @@ async def chat_endpoint(request: Request):
         session_data["history"] = json.dumps(history)
         session_data["last_interaction"] = datetime.utcnow().isoformat()
 
-        # Save session data to Redis
-        redis_client.hmset(session_key, session_data)
-        redis_client.expire(session_key, int(SESSION_TIMEOUT.total_seconds()))
+        # Save session data to Redis if Redis is available
+        if redis_client:
+            redis_client.hset(session_key, mapping=session_data)
+            redis_client.expire(session_key, int(SESSION_TIMEOUT.total_seconds()))
 
         # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
 
         # Step 2: Compute query embedding
-        user_embedding = await compute_embedding(question)
+        user_embedding = compute_embedding(question)
 
         # Step 3: Cache lookup using Redis
-        cached_answer, cached_similarity = cache_lookup(user_embedding)
+        cached_answer, cached_similarity = cache_lookup(user_embedding) if redis_client else (None, 0.0)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
             # Update session context with cached answer
@@ -819,7 +820,7 @@ async def chat_endpoint(request: Request):
             }
 
         # Step 4: Database search for the best match
-        db_answer, confidence, source = await query_validated_qa(user_embedding, question)
+        db_answer, confidence, source = query_validated_qa(user_embedding, question)
         if db_answer and confidence >= 0.5:  # Threshold for database match
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
 
@@ -833,12 +834,13 @@ async def chat_endpoint(request: Request):
                 logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
                 refined_answer = db_answer
 
-            # Cache the refined response in Redis
-            redis_client.hset(
-                "query_cache",
-                question,
-                json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
-            )
+            # Cache the refined response in Redis if Redis is available
+            if redis_client:
+                redis_client.hset(
+                    "query_cache",
+                    question,
+                    json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
+                )
 
             # Update session context with the refined answer
             update_session_context(session_id, raw_question, refined_answer)
@@ -851,15 +853,16 @@ async def chat_endpoint(request: Request):
             }
 
         # Step 5: Enhanced fallback response
-        fallback_response = await enhanced_fallback_response(question, session_id)
+        fallback_response = enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
 
-        # Cache the fallback response in Redis
-        redis_client.hset(
-            "query_cache",
-            question,
-            json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
-        )
+        # Cache the fallback response in Redis if Redis is available
+        if redis_client:
+            redis_client.hset(
+                "query_cache",
+                question,
+                json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
+            )
 
         # Update session context with fallback response
         update_session_context(session_id, raw_question, fallback_response)
