@@ -732,8 +732,6 @@ def cache_lookup(query_embedding):
         logger.exception("Error during cache lookup")
         return None, 0.0
 
-
-
 # Configuration for maximum session management
 MAX_SESSIONS = 1000  # Maximum number of active sessions allowed in memory
 
@@ -758,6 +756,7 @@ def evict_oldest_sessions():
         logger.exception("Error during session eviction.")
 
 
+# Updated `chat_endpoint` to remove `await` from `cache_lookup`
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     start_time = time.time()  # Measure response time
@@ -808,7 +807,7 @@ async def chat_endpoint(request: Request):
         user_embedding = await compute_embedding(question)
 
         # Step 3: Cache lookup using Redis
-        cached_answer, cached_similarity = await cache_lookup(user_embedding)
+        cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
             # Update session context with cached answer
