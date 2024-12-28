@@ -837,23 +837,18 @@ async def chat_endpoint(request: Request):
             await asyncio.to_thread(redis_client.hmset, session_key, session_data)
             await asyncio.to_thread(redis_client.expire, session_key, int(SESSION_TIMEOUT.total_seconds()))
 
-        # Log session details for debugging
-        logger.debug(f"Session {session_id}: Session data - {session_data}")
-
         # Handle user detail collection
         user_details = json.loads(session_data.get("user_details", "{}"))
-        logger.debug(f"Session {session_id}: Current user details - {user_details}")
         if None in user_details.values():  # If any detail is missing
             user_details, next_question = collect_user_details(session_key, raw_question)
-            logger.debug(f"Session {session_id}: Updated user details - {user_details}")
-            logger.debug(f"Session {session_id}: Next question - {next_question}")
-
-            return JSONResponse(
-                content={
-                    "question": next_question,
-                    "response_time": f"{time.time() - start_time:.2f} seconds",
-                }
-            )
+            logger.debug(f"Updated user details for session {session_id}: {user_details}")
+            if next_question:
+                return JSONResponse(
+                    content={
+                        "question": next_question,
+                        "response_time": f"{time.time() - start_time:.2f} seconds",
+                    }
+                )
 
         # Regular chatbot flow after user details are collected
         logger.info(f"Session {session_id}: User details collected - {user_details}")
@@ -886,7 +881,7 @@ async def chat_endpoint(request: Request):
 
             # Refine the response with LLaMA
             try:
-                refined_answer = await refine_with_llama(question, db_answer)
+                refined_answer = refine_with_llama(question, db_answer)
                 if not refined_answer:
                     logger.warning(f"LLaMA returned an empty response for session {session_id}. Using database answer.")
                     refined_answer = db_answer
