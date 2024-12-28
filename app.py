@@ -798,6 +798,7 @@ def collect_user_details(session_key, raw_question):
 
     return user_details, next_question
 
+# Updated `chat_endpoint` with user detail collection
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     start_time = time.time()  # Measure response time
