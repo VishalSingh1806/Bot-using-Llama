@@ -780,6 +780,7 @@ def collect_user_details(session_key, raw_question):
 
     for key, next_question in questions:
         if user_details.get(key) is None:
+            # Validation for email and phone inputs
             if key == "email" and not re.match(r"[^@]+@[^@]+\.[^@]+", raw_question):
                 return user_details, "The email you entered is invalid. Please try again."
             if key == "phone" and (not raw_question.isdigit() or len(raw_question) < 10):
@@ -791,16 +792,16 @@ def collect_user_details(session_key, raw_question):
 
     return user_details, None  # All details are collected
 
-
 # Updated `/chat` endpoint
+# Updated `chat_endpoint` with streamlined flow and removed `await` from `cache_lookup`
 @app.post("/chat")
 async def chat_endpoint(request: Request):
-    start_time = time.time()
+    start_time = time.time()  # Measure response time
     try:
         # Parse request data
         data = await request.json()
         raw_question = data.get("message", "").strip()
-        session_id = data.get("session_id", str(uuid.uuid4()))
+        session_id = data.get("session_id", str(uuid.uuid4()))  # Generate session ID if not provided
 
         if not raw_question:
             logger.warning("Empty message received.")
@@ -814,7 +815,7 @@ async def chat_endpoint(request: Request):
         # Initialize session if it doesn't exist
         if not session_data:
             session_data = {
-                "history": json.dumps([]),
+                "history": json.dumps([]),  # Store history as JSON string
                 "context": "",
                 "last_interaction": datetime.utcnow().isoformat(),
                 "user_details": json.dumps({"name": None, "email": None, "phone": None, "organization": None}),
@@ -822,6 +823,12 @@ async def chat_endpoint(request: Request):
             logger.info(f"New session initialized: {session_id}")
             await asyncio.to_thread(redis_client.hmset, session_key, session_data)
             await asyncio.to_thread(redis_client.expire, session_key, int(SESSION_TIMEOUT.total_seconds()))
+            return JSONResponse(
+                content={
+                    "question": "Hi! Let's get started. What's your name?",
+                    "response_time": f"{time.time() - start_time:.2f} seconds",
+                }
+            )
 
         # Handle user detail collection
         user_details, next_question = collect_user_details(session_key, raw_question)
