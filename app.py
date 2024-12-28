@@ -1,6 +1,3 @@
-Best code till now with redis, json, and all the things 4.0
--------------------------------------------------------------
-
 # Standard Library Imports
 import os
 import re
