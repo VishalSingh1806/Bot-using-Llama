@@ -832,8 +832,32 @@ async def chat_endpoint(request: Request):
         # Handle user detail collection
         user_details = json.loads(session_data.get("user_details", "{}"))
         if None in user_details.values():  # If any detail is missing
-            user_details, next_question = collect_user_details(session_key, raw_question)
+            # Validate and update user details step by step
+            if user_details["name"] is None:
+                user_details["name"] = raw_question
+                next_question = "Thanks! Can you share your email address?"
+            elif user_details["email"] is None:
+                if not re.match(r"[^@]+@[^@]+\.[^@]+", raw_question):
+                    next_question = "The email you entered is invalid. Please try again."
+                else:
+                    user_details["email"] = raw_question
+                    next_question = "Great! What's your phone number?"
+            elif user_details["phone"] is None:
+                if not raw_question.isdigit() or len(raw_question) < 10:
+                    next_question = "The phone number you entered is invalid. Please try again."
+                else:
+                    user_details["phone"] = raw_question
+                    next_question = "Finally, can you tell me your organization's name?"
+            elif user_details["organization"] is None:
+                user_details["organization"] = raw_question
+                next_question = f"Thanks {user_details['name']}! How can I assist you today?"
+            else:
+                next_question = None  # All details are collected
+
+            # Save updated user details to Redis
+            await asyncio.to_thread(redis_client.hset, session_key, "user_details", json.dumps(user_details))
             logger.debug(f"Updated user details for session {session_id}: {user_details}")
+
             if next_question:
                 return JSONResponse(
                     content={
