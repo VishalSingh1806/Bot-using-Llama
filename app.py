@@ -806,7 +806,7 @@ def collect_user_details(session_key, raw_question):
         logger.exception("Error in collect_user_details")
         raise e
 
-# Updated `chat_endpoint` with user detail collection
+# Updated `/chat` endpoint
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     start_time = time.time()  # Measure response time
@@ -839,6 +839,7 @@ async def chat_endpoint(request: Request):
 
         # Log session details for debugging
         logger.debug(f"Session {session_id}: Session data - {session_data}")
+
         # Handle user detail collection
         user_details = json.loads(session_data.get("user_details", "{}"))
         logger.debug(f"Session {session_id}: Current user details - {user_details}")
