@@ -768,43 +768,35 @@ def collect_user_details(session_key, raw_question):
     Handles the collection of user details for a session.
     Updates Redis with user details and returns the next question or completion message.
     """
-    try:
-        session_data = redis_client.hgetall(session_key)
-        user_details = json.loads(session_data.get("user_details", "{}"))
+    session_data = redis_client.hgetall(session_key)
+    user_details = json.loads(session_data.get("user_details", "{}"))
 
-        logger.debug(f"Collecting details: Current user details - {user_details}")
-
-        if user_details.get("name") is None:
-            user_details["name"] = raw_question
-            next_question = "Thanks! Can you share your email address?"
-        elif user_details.get("email") is None:
-            # Validate email
-            if re.match(r"[^@]+@[^@]+\.[^@]+", raw_question):
-                user_details["email"] = raw_question
-                next_question = "Great! What's your phone number?"
-            else:
-                next_question = "The email you entered is invalid. Please try again."
-        elif user_details.get("phone") is None:
-            # Validate phone number
-            if re.match(r"^\d{10}$", raw_question):  # Assuming a 10-digit phone number
-                user_details["phone"] = raw_question
-                next_question = "Finally, can you tell me your organization's name?"
-            else:
-                next_question = "The phone number you entered is invalid. Please enter a valid 10-digit number."
-        elif user_details.get("organization") is None:
-            user_details["organization"] = raw_question
-            next_question = f"Thanks {user_details['name']}! How can I assist you today?"
+    # Validate and update user details step by step
+    if user_details.get("name") is None:
+        user_details["name"] = raw_question
+        next_question = "Thanks! Can you share your email address?"
+    elif user_details.get("email") is None:
+        if not re.match(r"[^@]+@[^@]+\.[^@]+", raw_question):
+            next_question = "The email you entered is invalid. Please try again."
         else:
-            next_question = None  # All details are collected
+            user_details["email"] = raw_question
+            next_question = "Great! What's your phone number?"
+    elif user_details.get("phone") is None:
+        if not raw_question.isdigit() or len(raw_question) < 10:
+            next_question = "The phone number you entered is invalid. Please try again."
+        else:
+            user_details["phone"] = raw_question
+            next_question = "Finally, can you tell me your organization's name?"
+    elif user_details.get("organization") is None:
+        user_details["organization"] = raw_question
+        next_question = f"Thanks {user_details['name']}! How can I assist you today?"
+    else:
+        next_question = None  # All details are collected
 
-        # Save updated user details to Redis
-        redis_client.hset(session_key, "user_details", json.dumps(user_details))
-        logger.debug(f"Updated user details in Redis: {user_details}")
+    # Save updated user details to Redis
+    redis_client.hset(session_key, "user_details", json.dumps(user_details))
 
-        return user_details, next_question
-    except Exception as e:
-        logger.exception("Error in collect_user_details")
-        raise e
+    return user_details, next_question
 
 # Updated `/chat` endpoint
 @app.post("/chat")
