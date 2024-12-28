@@ -765,48 +765,42 @@ def is_valid_phone(phone):
 
 def collect_user_details(session_key, raw_question):
     """
-    Handles the collection of user details for a session.
+    Handles the collection of user details step by step.
     Updates Redis with user details and returns the next question or completion message.
     """
     session_data = redis_client.hgetall(session_key)
     user_details = json.loads(session_data.get("user_details", "{}"))
 
-    # Validate and update user details step by step
-    if user_details.get("name") is None:
-        user_details["name"] = raw_question
-        next_question = "Thanks! Can you share your email address?"
-    elif user_details.get("email") is None:
-        if not re.match(r"[^@]+@[^@]+\.[^@]+", raw_question):
-            next_question = "The email you entered is invalid. Please try again."
-        else:
-            user_details["email"] = raw_question
-            next_question = "Great! What's your phone number?"
-    elif user_details.get("phone") is None:
-        if not raw_question.isdigit() or len(raw_question) < 10:
-            next_question = "The phone number you entered is invalid. Please try again."
-        else:
-            user_details["phone"] = raw_question
-            next_question = "Finally, can you tell me your organization's name?"
-    elif user_details.get("organization") is None:
-        user_details["organization"] = raw_question
-        next_question = f"Thanks {user_details['name']}! How can I assist you today?"
-    else:
-        next_question = None  # All details are collected
+    questions = [
+        ("name", "Thanks! Can you share your email address?"),
+        ("email", "Great! What's your phone number?"),
+        ("phone", "Finally, can you tell me your organization's name?"),
+        ("organization", None),
+    ]
 
-    # Save updated user details to Redis
-    redis_client.hset(session_key, "user_details", json.dumps(user_details))
+    for key, next_question in questions:
+        if user_details.get(key) is None:
+            if key == "email" and not re.match(r"[^@]+@[^@]+\.[^@]+", raw_question):
+                return user_details, "The email you entered is invalid. Please try again."
+            if key == "phone" and (not raw_question.isdigit() or len(raw_question) < 10):
+                return user_details, "The phone number you entered is invalid. Please try again."
 
-    return user_details, next_question
+            user_details[key] = raw_question
+            redis_client.hset(session_key, "user_details", json.dumps(user_details))
+            return user_details, next_question if next_question else f"Thanks {user_details['name']}! How can I assist you today?"
+
+    return user_details, None  # All details are collected
+
 
 # Updated `/chat` endpoint
 @app.post("/chat")
 async def chat_endpoint(request: Request):
-    start_time = time.time()  # Measure response time
+    start_time = time.time()
     try:
         # Parse request data
         data = await request.json()
         raw_question = data.get("message", "").strip()
-        session_id = data.get("session_id", str(uuid.uuid4()))  # Generate session ID if not provided
+        session_id = data.get("session_id", str(uuid.uuid4()))
 
         if not raw_question:
             logger.warning("Empty message received.")
@@ -820,7 +814,7 @@ async def chat_endpoint(request: Request):
         # Initialize session if it doesn't exist
         if not session_data:
             session_data = {
-                "history": json.dumps([]),  # Store history as JSON string
+                "history": json.dumps([]),
                 "context": "",
                 "last_interaction": datetime.utcnow().isoformat(),
                 "user_details": json.dumps({"name": None, "email": None, "phone": None, "organization": None}),
@@ -830,46 +824,19 @@ async def chat_endpoint(request: Request):
             await asyncio.to_thread(redis_client.expire, session_key, int(SESSION_TIMEOUT.total_seconds()))
 
         # Handle user detail collection
-        user_details = json.loads(session_data.get("user_details", "{}"))
-        if None in user_details.values():  # If any detail is missing
-            # Validate and update user details step by step
-            if user_details["name"] is None:
-                user_details["name"] = raw_question
-                next_question = "Thanks! Can you share your email address?"
-            elif user_details["email"] is None:
-                if not re.match(r"[^@]+@[^@]+\.[^@]+", raw_question):
-                    next_question = "The email you entered is invalid. Please try again."
-                else:
-                    user_details["email"] = raw_question
-                    next_question = "Great! What's your phone number?"
-            elif user_details["phone"] is None:
-                if not raw_question.isdigit() or len(raw_question) < 10:
-                    next_question = "The phone number you entered is invalid. Please try again."
-                else:
-                    user_details["phone"] = raw_question
-                    next_question = "Finally, can you tell me your organization's name?"
-            elif user_details["organization"] is None:
-                user_details["organization"] = raw_question
-                next_question = f"Thanks {user_details['name']}! How can I assist you today?"
-            else:
-                next_question = None  # All details are collected
+        user_details, next_question = collect_user_details(session_key, raw_question)
+        logger.debug(f"Session {session_id}: Updated user details: {user_details}")
 
-            # Save updated user details to Redis
-            await asyncio.to_thread(redis_client.hset, session_key, "user_details", json.dumps(user_details))
-            logger.debug(f"Updated user details for session {session_id}: {user_details}")
+        if next_question:
+            return JSONResponse(
+                content={
+                    "question": next_question,
+                    "response_time": f"{time.time() - start_time:.2f} seconds",
+                }
+            )
 
-            if next_question:
-                return JSONResponse(
-                    content={
-                        "question": next_question,
-                        "response_time": f"{time.time() - start_time:.2f} seconds",
-                    }
-                )
-
-        # Regular chatbot flow after user details are collected
-        logger.info(f"Session {session_id}: User details collected - {user_details}")
-
-        # Step 1: Preprocess the query
+        # Proceed with regular chatbot flow
+        logger.info(f"Session {session_id}: All user details collected. Proceeding with chatbot logic.")
         question = preprocess_query(raw_question, session_id)
 
         # Step 2: Compute query embedding
@@ -879,7 +846,6 @@ async def chat_endpoint(request: Request):
         cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
-            # Update session context with cached answer
             update_session_context(session_id, raw_question, cached_answer)
             return JSONResponse(
                 content={
@@ -894,28 +860,8 @@ async def chat_endpoint(request: Request):
         db_answer, confidence, source = await query_validated_qa(user_embedding, question)
         if db_answer and confidence >= 0.5:
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
-
-            # Refine the response with LLaMA
-            try:
-                refined_answer = refine_with_llama(question, db_answer)
-                if not refined_answer:
-                    logger.warning(f"LLaMA returned an empty response for session {session_id}. Using database answer.")
-                    refined_answer = db_answer
-            except Exception as llama_error:
-                logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
-                refined_answer = db_answer
-
-            # Cache the refined response in Redis
-            await asyncio.to_thread(
-                redis_client.hset,
-                "query_cache",
-                question,
-                json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
-            )
-
-            # Update session context with the refined answer
+            refined_answer = refine_with_llama(question, db_answer) or db_answer
             update_session_context(session_id, raw_question, refined_answer)
-
             return JSONResponse(
                 content={
                     "answer": refined_answer,
@@ -928,18 +874,7 @@ async def chat_endpoint(request: Request):
         # Step 5: Enhanced fallback response
         fallback_response = await enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
-
-        # Cache the fallback response in Redis
-        await asyncio.to_thread(
-            redis_client.hset,
-            "query_cache",
-            question,
-            json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
-        )
-
-        # Update session context with fallback response
         update_session_context(session_id, raw_question, fallback_response)
-
         return JSONResponse(
             content={
                 "answer": fallback_response,
@@ -951,11 +886,9 @@ async def chat_endpoint(request: Request):
 
     except HTTPException as e:
         logger.warning(f"HTTP error occurred: {e.detail}")
-        ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise e
     except Exception as e:
         logger.exception("Unhandled exception in /chat endpoint.")
-        ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
     finally:
-        REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
+        REQUEST_LATENCY.observe(time.time() - start_time)
