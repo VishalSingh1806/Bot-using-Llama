@@ -1,3 +1,6 @@
+Best code till now with redis, json, and all the things 4.0
+-------------------------------------------------------------
+
 # Standard Library Imports
 import os
 import re
@@ -5,7 +8,6 @@ import json
 import time
 import logging
 import sqlite3  
-import psycopg2
 from sqlite3 import Connection
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -79,7 +81,7 @@ REQUEST_LATENCY = Summary('request_latency_seconds', 'Latency of HTTP requests')
 ERROR_COUNT = Counter('error_count', 'Total number of errors')
 
 # Start Prometheus server
-start_http_server(9200)  # Exposes metrics on http://localhost:9100
+start_http_server(9100)  # Exposes metrics on http://localhost:9100
 
 
 # Logging configuration with rotation
@@ -305,19 +307,12 @@ DB_POOL = SQLiteConnectionPool(DB_PATH)
 
 
 # Utility functions
-def connect_db():
-    """Connect to the GCP PostgreSQL database."""
+def connect_db() -> Connection:
+    """Fetch a connection from the pool."""
     try:
-        conn = psycopg2.connect(
-            dbname="epr_database",
-            user="postgres",
-            password="Tech123",
-            host="34.100.134.186",
-            port="5432"
-        )
-        return conn
-    except psycopg2.Error as e:
-        logger.error(f"Database connection error: {e}")
+        return DB_POOL.get_connection()
+    except Exception as e:
+        logger.error(f"Failed to get database connection: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed.")
 
 def release_db_connection(conn: Connection):
@@ -354,7 +349,7 @@ reference_queries = [
     "What are EPR compliance rules?",
     "How do I register for EPR compliance?"
 ]
-reference_embeddings = np.vstack(await asyncio.gather(*(compute_embedding(q) for q in reference_queries)))
+reference_embeddings = np.vstack([compute_embedding(q) for q in reference_queries])
 
 
 def is_query_relevant(query: str, threshold: float = 0.7) -> bool:
@@ -445,42 +440,49 @@ def save_keywords_to_file():
 async def query_validated_qa(user_embedding, question: str):
     """Query the ValidatedQA table for the best match."""
     try:
-        conn = await asyncio.to_thread(connect_db)
-        cursor = await asyncio.to_thread(conn.cursor)
+        conn = connect_db()
+        cursor = conn.cursor()
+        start_time = time.time()
 
-        # Fetch QA pairs asynchronously
-        qa_pairs = await asyncio.to_thread(cursor.execute, "SELECT id, question, answer, question_embedding, section_id FROM ValidatedQA")
-        qa_pairs = await asyncio.to_thread(cursor.fetchall)
+        # Fetch only required columns to minimize data transfer
+        rows = await asyncio.to_thread(
+            lambda: cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA").fetchall()
+        )
 
         max_similarity = 0.0
         best_match = None
-        best_section = None
 
-        for qa_id, db_question, db_answer, db_question_embedding, section_id in qa_pairs:
-            question_vector = np.frombuffer(db_question_embedding, dtype=np.float32).reshape(1, -1)
+        for row in rows:
+            question_vector = np.frombuffer(row[2], dtype=np.float32).reshape(1, -1)
             similarity = cosine_similarity(user_embedding, question_vector)[0][0]
             if similarity > max_similarity:
                 max_similarity = similarity
-                best_match = (qa_id, db_answer, section_id)
+                best_match = row[1]  # Answer
+
+        query_duration = time.time() - start_time
+        logger.info(f"Database query completed in {query_duration:.2f} seconds")
+
+        release_db_connection(conn)  # Return the connection to the pool
 
         if best_match:
-            qa_id, db_answer, section_id = best_match
-            # Fetch section content if section_id is available
-            if section_id:
-                section_result = await asyncio.to_thread(cursor.execute, "SELECT content FROM Sections WHERE id = %s", (section_id,))
-                section_result = await asyncio.to_thread(cursor.fetchone)
-                best_section = section_result[0] if section_result else None
-
-        await asyncio.to_thread(conn.close)
-
-        if best_match:
-            combined_answer = f"{db_answer}\n\nAdditional Context:\n{best_section}" if best_section else db_answer
-            return combined_answer, max_similarity, "database"
+            logger.debug(f"Database match found with similarity {max_similarity:.2f}")
         else:
-            return None, 0.0, None
-    except psycopg2.Error as e:
+            logger.debug("No database match found for the query.")
+
+        return best_match, max_similarity, "database"
+    except sqlite3.Error as e:
         logger.error(f"Database query error: {e}")
         return None, 0.0, None
+    except Exception as ex:
+        logger.exception(f"Unexpected error in query_validated_qa: {ex}")
+        return None, 0.0, None
+    finally:
+        # Ensure connection release in case of unexpected errors
+        try:
+            release_db_connection(conn)
+        except UnboundLocalError:
+            pass  # Connection was not established
+
 
 
 def fuzzy_match_fallback(question: str) -> str:
@@ -677,26 +679,26 @@ async def health_check():
     return {"status": "ok"}
 
 def test_db_connection():
-    """Test database connection and structure."""
+    """Test the database connection and ensure tables exist."""
     try:
         conn = connect_db()
         cursor = conn.cursor()
-        
-        # Check tables in the database
-        cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';")
+
+        # Check the existence of tables
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = cursor.fetchall()
         logger.info(f"Tables in the database: {tables}")
 
-        # Verify structure of the `ValidatedQA` table
+        # Check `ValidatedQA` table structure
         if ("ValidatedQA",) in tables:
-            cursor.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'ValidatedQA';")
+            cursor.execute("PRAGMA table_info(ValidatedQA);")
             columns = cursor.fetchall()
             logger.info(f"Columns in ValidatedQA table: {columns}")
         else:
             logger.warning("ValidatedQA table not found in the database.")
 
-        conn.close()
-    except psycopg2.Error as e:
+        release_db_connection(conn)
+    except sqlite3.Error as e:
         logger.error(f"Database connection test failed: {e}")
     except Exception as ex:
         logger.exception(f"Unexpected error during database connection test: {ex}")
