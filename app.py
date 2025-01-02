@@ -853,14 +853,13 @@ async def chat_endpoint(request: Request):
                 },
                 "is_collecting_details": True  # Start with detail collection mode
             }
+            logger.info(f"New session initialized: {session_id}")
 
             # Send an introductory message when the session starts
             return JSONResponse(
                 content={
-                    "message": (
-                        "Hello! Before we start, I'd like to collect some basic details to assist you better. "
-                        "What's your name?"
-                    )
+                    "message": "Hello! Before we start, I'd like to collect some basic details to assist you better.",
+                    "prompt": "What's your name?"
                 }
             )
 
@@ -873,12 +872,18 @@ async def chat_endpoint(request: Request):
 
             if next_prompt:
                 logger.info(f"Asking for more user details: {next_prompt}")
-                return JSONResponse(content={"prompt": next_prompt, "user_details": user_details})
+                return JSONResponse(
+                    content={"message": next_prompt, "user_details": user_details}
+                )
 
             # Switch to normal conversation mode after collecting details
             session["is_collecting_details"] = False
             logger.info(f"All user details collected for session {session_id}: {user_details}")
-            return JSONResponse(content={"message": f"Thanks {user_details['name']}! How can I assist you today?"})
+            return JSONResponse(
+                content={
+                    "message": f"Thanks {user_details['name']}! How can I assist you today?"
+                }
+            )
 
         # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
