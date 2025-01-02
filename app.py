@@ -108,16 +108,6 @@ except redis.ConnectionError as e:
     raise RuntimeError("Redis connection failed.") from e
 
 # Global session memory
-session_memory = defaultdict(lambda: {
-    "history": [],
-    "context": "",
-    "user_details": {
-        "name": None,
-        "email": None,
-        "phone": None,
-        "organization": None
-    }
-})
 
 
 # Predefined openings
