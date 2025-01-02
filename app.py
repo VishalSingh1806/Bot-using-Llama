@@ -158,6 +158,7 @@ async def lifespan(app: FastAPI):
             "What are EPR compliance rules?",
             "How do I register for EPR compliance?"
         ]
+        # Compute embeddings asynchronously
         embeddings = await asyncio.gather(*(compute_embedding(q) for q in reference_queries))
         reference_embeddings = np.vstack(embeddings)
         logger.info("Static embeddings precomputed for reference queries.")
@@ -186,6 +187,7 @@ async def lifespan(app: FastAPI):
     yield
     save_keywords_to_file()  # Save keywords during shutdown
     logger.info("Application shutdown: Cleaning up resources.")
+
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
