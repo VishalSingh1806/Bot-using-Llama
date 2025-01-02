@@ -848,10 +848,8 @@ async def chat_endpoint(request: Request):
             # Send an introductory message when the session starts
             return JSONResponse(
                 content={
-                    "message": (
-                        "Hello! Before we start, I'd like to collect some basic details to assist you better.",
-                        "prompt: What's your name?"
-                    )
+                    "message": "Hello! Before we start, I'd like to collect some basic details to assist you better.",
+                    "prompt": "What's your name?"
                 }
             )
 
@@ -864,8 +862,9 @@ async def chat_endpoint(request: Request):
 
             if next_prompt:
                 logger.info(f"Asking for more user details: {next_prompt}")
-                return JSONResponse(content={"message": next_prompt, "user_details": user_details})
-
+                return JSONResponse(
+                    content={"message": next_prompt, "user_details": user_details}
+                )
 
             # Switch to normal conversation mode after collecting details
             session["is_collecting_details"] = False
@@ -876,7 +875,7 @@ async def chat_endpoint(request: Request):
                 }
             )
 
-        # Step 1: Preprocess the query
+        # Handle normal conversation flow after collecting details
         question = preprocess_query(raw_question, session_id)
 
         # Step 2: Compute query embedding
@@ -919,7 +918,6 @@ async def chat_endpoint(request: Request):
                 json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
             )
 
-            # Update session context
             update_session_context(session_id, raw_question, refined_answer)
 
             return JSONResponse(
@@ -943,14 +941,13 @@ async def chat_endpoint(request: Request):
             json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
         )
 
-        # Update session context with fallback response
         update_session_context(session_id, raw_question, fallback_response)
 
         return JSONResponse(
             content={
                 "answer": fallback_response,
                 "confidence": 0.5,
-                "source": "fuzzy fallback",
+                "source": "fallback",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
         )
