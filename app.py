@@ -5,6 +5,7 @@ import json
 import time
 import logging
 import sqlite3  
+import psycopg2
 from sqlite3 import Connection
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -78,7 +79,7 @@ REQUEST_LATENCY = Summary('request_latency_seconds', 'Latency of HTTP requests')
 ERROR_COUNT = Counter('error_count', 'Total number of errors')
 
 # Start Prometheus server
-start_http_server(9100)  # Exposes metrics on http://localhost:9100
+start_http_server(9200)  # Exposes metrics on http://localhost:9100
 
 
 # Logging configuration with rotation
@@ -304,12 +305,19 @@ DB_POOL = SQLiteConnectionPool(DB_PATH)
 
 
 # Utility functions
-def connect_db() -> Connection:
-    """Fetch a connection from the pool."""
+def connect_db():
+    """Connect to the GCP PostgreSQL database."""
     try:
-        return DB_POOL.get_connection()
-    except Exception as e:
-        logger.error(f"Failed to get database connection: {e}")
+        conn = psycopg2.connect(
+            dbname="epr_database",
+            user="postgres",
+            password="Tech123",
+            host="34.100.134.186",
+            port="5432"
+        )
+        return conn
+    except psycopg2.Error as e:
+        logger.error(f"Database connection error: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed.")
 
 def release_db_connection(conn: Connection):
@@ -346,7 +354,7 @@ reference_queries = [
     "What are EPR compliance rules?",
     "How do I register for EPR compliance?"
 ]
-reference_embeddings = np.vstack([compute_embedding(q) for q in reference_queries])
+reference_embeddings = np.vstack(await asyncio.gather(*(compute_embedding(q) for q in reference_queries)))
 
 
 def is_query_relevant(query: str, threshold: float = 0.7) -> bool:
@@ -437,49 +445,42 @@ def save_keywords_to_file():
 async def query_validated_qa(user_embedding, question: str):
     """Query the ValidatedQA table for the best match."""
     try:
-        conn = connect_db()
-        cursor = conn.cursor()
-        start_time = time.time()
+        conn = await asyncio.to_thread(connect_db)
+        cursor = await asyncio.to_thread(conn.cursor)
 
-        # Fetch only required columns to minimize data transfer
-        rows = await asyncio.to_thread(
-            lambda: cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA").fetchall()
-        )
+        # Fetch QA pairs asynchronously
+        qa_pairs = await asyncio.to_thread(cursor.execute, "SELECT id, question, answer, question_embedding, section_id FROM ValidatedQA")
+        qa_pairs = await asyncio.to_thread(cursor.fetchall)
 
         max_similarity = 0.0
         best_match = None
+        best_section = None
 
-        for row in rows:
-            question_vector = np.frombuffer(row[2], dtype=np.float32).reshape(1, -1)
+        for qa_id, db_question, db_answer, db_question_embedding, section_id in qa_pairs:
+            question_vector = np.frombuffer(db_question_embedding, dtype=np.float32).reshape(1, -1)
             similarity = cosine_similarity(user_embedding, question_vector)[0][0]
             if similarity > max_similarity:
                 max_similarity = similarity
-                best_match = row[1]  # Answer
-
-        query_duration = time.time() - start_time
-        logger.info(f"Database query completed in {query_duration:.2f} seconds")
-
-        release_db_connection(conn)  # Return the connection to the pool
+                best_match = (qa_id, db_answer, section_id)
 
         if best_match:
-            logger.debug(f"Database match found with similarity {max_similarity:.2f}")
-        else:
-            logger.debug("No database match found for the query.")
+            qa_id, db_answer, section_id = best_match
+            # Fetch section content if section_id is available
+            if section_id:
+                section_result = await asyncio.to_thread(cursor.execute, "SELECT content FROM Sections WHERE id = %s", (section_id,))
+                section_result = await asyncio.to_thread(cursor.fetchone)
+                best_section = section_result[0] if section_result else None
 
-        return best_match, max_similarity, "database"
-    except sqlite3.Error as e:
+        await asyncio.to_thread(conn.close)
+
+        if best_match:
+            combined_answer = f"{db_answer}\n\nAdditional Context:\n{best_section}" if best_section else db_answer
+            return combined_answer, max_similarity, "database"
+        else:
+            return None, 0.0, None
+    except psycopg2.Error as e:
         logger.error(f"Database query error: {e}")
         return None, 0.0, None
-    except Exception as ex:
-        logger.exception(f"Unexpected error in query_validated_qa: {ex}")
-        return None, 0.0, None
-    finally:
-        # Ensure connection release in case of unexpected errors
-        try:
-            release_db_connection(conn)
-        except UnboundLocalError:
-            pass  # Connection was not established
-
 
 
 def fuzzy_match_fallback(question: str) -> str:
@@ -676,26 +677,26 @@ async def health_check():
     return {"status": "ok"}
 
 def test_db_connection():
-    """Test the database connection and ensure tables exist."""
+    """Test database connection and structure."""
     try:
         conn = connect_db()
         cursor = conn.cursor()
-
-        # Check the existence of tables
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        
+        # Check tables in the database
+        cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';")
         tables = cursor.fetchall()
         logger.info(f"Tables in the database: {tables}")
 
-        # Check `ValidatedQA` table structure
+        # Verify structure of the `ValidatedQA` table
         if ("ValidatedQA",) in tables:
-            cursor.execute("PRAGMA table_info(ValidatedQA);")
+            cursor.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'ValidatedQA';")
             columns = cursor.fetchall()
             logger.info(f"Columns in ValidatedQA table: {columns}")
         else:
             logger.warning("ValidatedQA table not found in the database.")
 
-        release_db_connection(conn)
-    except sqlite3.Error as e:
+        conn.close()
+    except psycopg2.Error as e:
         logger.error(f"Database connection test failed: {e}")
     except Exception as ex:
         logger.exception(f"Unexpected error during database connection test: {ex}")
@@ -755,45 +756,8 @@ def evict_oldest_sessions():
     except Exception as e:
         logger.exception("Error during session eviction.")
 
-def is_valid_email(email):
-    """Validate the email format."""
-    return re.match(r"[^@]+@[^@]+\.[^@]+", email)
 
-def is_valid_phone(phone):
-    """Validate the phone number format."""
-    return re.match(r"^\+?\d{7,15}$", phone)
-
-def collect_user_details(session_key, raw_question):
-    """
-    Handles the collection of user details step by step.
-    Updates Redis with user details and returns the next question or completion message.
-    """
-    session_data = redis_client.hgetall(session_key)
-    user_details = json.loads(session_data.get("user_details", "{}"))
-
-    questions = [
-        ("name", "Thanks! Can you share your email address?"),
-        ("email", "Great! What's your phone number?"),
-        ("phone", "Finally, can you tell me your organization's name?"),
-        ("organization", None),
-    ]
-
-    for key, next_question in questions:
-        if user_details.get(key) is None:
-            # Validation for email and phone inputs
-            if key == "email" and not re.match(r"[^@]+@[^@]+\.[^@]+", raw_question):
-                return user_details, "The email you entered is invalid. Please try again."
-            if key == "phone" and (not raw_question.isdigit() or len(raw_question) < 10):
-                return user_details, "The phone number you entered is invalid. Please try again."
-
-            user_details[key] = raw_question
-            redis_client.hset(session_key, "user_details", json.dumps(user_details))
-            return user_details, next_question if next_question else f"Thanks {user_details['name']}! How can I assist you today?"
-
-    return user_details, None  # All details are collected
-
-# Updated `/chat` endpoint
-# Updated `chat_endpoint` with streamlined flow and removed `await` from `cache_lookup`
+# Updated `chat_endpoint` to remove `await` from `cache_lookup`
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     start_time = time.time()  # Measure response time
@@ -818,32 +782,26 @@ async def chat_endpoint(request: Request):
                 "history": json.dumps([]),  # Store history as JSON string
                 "context": "",
                 "last_interaction": datetime.utcnow().isoformat(),
-                "user_details": json.dumps({"name": None, "email": None, "phone": None, "organization": None}),
             }
             logger.info(f"New session initialized: {session_id}")
-            await asyncio.to_thread(redis_client.hmset, session_key, session_data)
-            await asyncio.to_thread(redis_client.expire, session_key, int(SESSION_TIMEOUT.total_seconds()))
-            return JSONResponse(
-                content={
-                    "question": "Hi! Let's get started. What's your name?",
-                    "response_time": f"{time.time() - start_time:.2f} seconds",
-                }
-            )
 
-        # Handle user detail collection
-        user_details, next_question = collect_user_details(session_key, raw_question)
-        logger.debug(f"Session {session_id}: Updated user details: {user_details}")
+        # Update session history
+        history = json.loads(session_data.get("history", "[]"))
+        history.append(
+            {
+                "query": raw_question,
+                "response": "Processing...",
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        )
+        session_data["history"] = json.dumps(history)
+        session_data["last_interaction"] = datetime.utcnow().isoformat()
 
-        if next_question:
-            return JSONResponse(
-                content={
-                    "question": next_question,
-                    "response_time": f"{time.time() - start_time:.2f} seconds",
-                }
-            )
+        # Save session data to Redis
+        await asyncio.to_thread(redis_client.hmset, session_key, session_data)
+        await asyncio.to_thread(redis_client.expire, session_key, int(SESSION_TIMEOUT.total_seconds()))
 
-        # Proceed with regular chatbot flow
-        logger.info(f"Session {session_id}: All user details collected. Proceeding with chatbot logic.")
+        # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
 
         # Step 2: Compute query embedding
@@ -853,6 +811,7 @@ async def chat_endpoint(request: Request):
         cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
+            # Update session context with cached answer
             update_session_context(session_id, raw_question, cached_answer)
             return JSONResponse(
                 content={
@@ -867,8 +826,28 @@ async def chat_endpoint(request: Request):
         db_answer, confidence, source = await query_validated_qa(user_embedding, question)
         if db_answer and confidence >= 0.5:
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
-            refined_answer = refine_with_llama(question, db_answer) or db_answer
+
+            # Refine the response with LLaMA
+            try:
+                refined_answer = await refine_with_llama(question, db_answer)
+                if not refined_answer:
+                    logger.warning(f"LLaMA returned an empty response for session {session_id}. Using database answer.")
+                    refined_answer = db_answer
+            except Exception as llama_error:
+                logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
+                refined_answer = db_answer
+
+            # Cache the refined response in Redis
+            await asyncio.to_thread(
+                redis_client.hset,
+                "query_cache",
+                question,
+                json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
+            )
+
+            # Update session context with the refined answer
             update_session_context(session_id, raw_question, refined_answer)
+
             return JSONResponse(
                 content={
                     "answer": refined_answer,
@@ -881,7 +860,18 @@ async def chat_endpoint(request: Request):
         # Step 5: Enhanced fallback response
         fallback_response = await enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
+
+        # Cache the fallback response in Redis
+        await asyncio.to_thread(
+            redis_client.hset,
+            "query_cache",
+            question,
+            json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
+        )
+
+        # Update session context with fallback response
         update_session_context(session_id, raw_question, fallback_response)
+
         return JSONResponse(
             content={
                 "answer": fallback_response,
@@ -893,9 +883,11 @@ async def chat_endpoint(request: Request):
 
     except HTTPException as e:
         logger.warning(f"HTTP error occurred: {e.detail}")
+        ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise e
     except Exception as e:
         logger.exception("Unhandled exception in /chat endpoint.")
+        ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
     finally:
-        REQUEST_LATENCY.observe(time.time() - start_time)
+        REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
