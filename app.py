@@ -855,6 +855,16 @@ async def chat_endpoint(request: Request):
                 "is_collecting_details": True  # Start with detail collection mode
             }
 
+            # Send an introductory message when the session starts
+            return JSONResponse(
+                content={
+                    "message": (
+                        "Hello! Before we start, I'd like to collect some basic details to assist you better. "
+                        "What's your name?"
+                    )
+                }
+            )
+
         session = session_memory[session_id]
 
         # Collect user details if required
