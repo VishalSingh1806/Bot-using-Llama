@@ -799,6 +799,7 @@ def collect_user_details(session_key, raw_question):
     return user_details, next_question
 
 # Updated `chat_endpoint` with user detail collection
+# Updated `chat_endpoint` without user detail collection
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     start_time = time.time()  # Measure response time
@@ -823,24 +824,9 @@ async def chat_endpoint(request: Request):
                 "history": json.dumps([]),  # Store history as JSON string
                 "context": "",
                 "last_interaction": datetime.utcnow().isoformat(),
-                "user_details": json.dumps({"name": None, "email": None, "phone": None, "organization": None}),
             }
             await asyncio.to_thread(redis_client.hmset, session_key, session_data)
             await asyncio.to_thread(redis_client.expire, session_key, int(SESSION_TIMEOUT.total_seconds()))
-
-        # Handle user detail collection
-        user_details = json.loads(session_data.get("user_details", "{}"))
-        if None in user_details.values():  # If any detail is missing
-            user_details, next_question = collect_user_details(session_key, raw_question)
-            return JSONResponse(
-                content={
-                    "question": next_question,
-                    "response_time": f"{time.time() - start_time:.2f} seconds",
-                }
-            )
-
-        # Regular chatbot flow after user details are collected
-        logger.info(f"Session {session_id}: User details collected - {user_details}")
 
         # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
