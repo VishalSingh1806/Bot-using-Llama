@@ -107,6 +107,17 @@ except redis.ConnectionError as e:
     logger.error("Failed to connect to Redis.")
     raise RuntimeError("Redis connection failed.") from e
 
+# Global session memory
+session_memory = defaultdict(lambda: {
+    "history": [],
+    "context": "",
+    "user_details": {
+        "name": None,
+        "email": None,
+        "phone": None,
+        "organization": None
+    }
+})
 
 
 # Predefined openings
@@ -700,6 +711,19 @@ def test_db_connection():
     except Exception as ex:
         logger.exception(f"Unexpected error during database connection test: {ex}")
 
+@app.get("/metrics")
+async def metrics():
+    """Expose Prometheus metrics via FastAPI."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+@app.get("/session/{session_id}")
+async def get_session_details(session_id: str):
+    """Endpoint to retrieve session details for debugging or review."""
+    if session_id not in session_memory:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return session_memory[session_id]
+
+
 def cache_lookup(query_embedding):
     """
     Look up the cache for a similar question and its answer from Redis or in-memory cache.
@@ -754,13 +778,56 @@ def evict_oldest_sessions():
             logger.info(f"Evicted {sessions_to_remove} oldest sessions to manage memory.")
     except Exception as e:
         logger.exception("Error during session eviction.")
-
-
-
     # Save updated user details to Redis
     redis_client.hset(session_key, "user_details", json.dumps(user_details))
 
     return user_details, next_question
+
+def is_valid_email(email):
+    """Validate email format."""
+    return re.match(r"[^@]+@[^@]+\.[^@]+", email)
+
+def is_valid_phone(phone):
+    """Validate phone number format."""
+    return re.match(r"^\+?\d{7,15}$", phone)
+
+def collect_user_details(session_id, raw_question):
+    """
+    Handles the collection of user details for a session.
+    Prompts for missing details and validates inputs.
+    """
+    user_details = session_memory[session_id].get("user_details", {
+        "name": None,
+        "email": None,
+        "phone": None,
+        "organization": None
+    })
+
+    if user_details["name"] is None:
+        user_details["name"] = raw_question
+        next_prompt = "Thanks! Can you share your email address?"
+    elif user_details["email"] is None:
+        if is_valid_email(raw_question):
+            user_details["email"] = raw_question
+            next_prompt = "Great! What's your phone number?"
+        else:
+            next_prompt = "The email you entered is invalid. Please provide a valid email address."
+    elif user_details["phone"] is None:
+        if is_valid_phone(raw_question):
+            user_details["phone"] = raw_question
+            next_prompt = "Finally, can you tell me your organization's name?"
+        else:
+            next_prompt = "The phone number you entered is invalid. Please provide a valid phone number."
+    elif user_details["organization"] is None:
+        user_details["organization"] = raw_question
+        next_prompt = f"Thanks {user_details['name']}! How can I assist you today?"
+    else:
+        next_prompt = None  # All details are collected
+
+    # Update session memory with user details
+    session_memory[session_id]["user_details"] = user_details
+    return user_details, next_prompt
+
 
 # Updated `chat_endpoint` with user detail collection
 # Updated `chat_endpoint` without user detail collection
@@ -778,19 +845,24 @@ async def chat_endpoint(request: Request):
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
         logger.info(f"Session {session_id}: Received question: {raw_question}")
 
-        # Key for session in Redis
-        session_key = f"session:{session_id}"
-        session_data = await asyncio.to_thread(redis_client.hgetall, session_key)
-
-        # Initialize session if it doesn't exist
-        if not session_data:
-            session_data = {
-                "history": json.dumps([]),  # Store history as JSON string
+        # Initialize session memory if it doesn't exist
+        if session_id not in session_memory:
+            session_memory[session_id] = {
+                "history": [],
                 "context": "",
-                "last_interaction": datetime.utcnow().isoformat(),
+                "user_details": {
+                    "name": None,
+                    "email": None,
+                    "phone": None,
+                    "organization": None
+                }
             }
-            await asyncio.to_thread(redis_client.hmset, session_key, session_data)
-            await asyncio.to_thread(redis_client.expire, session_key, int(SESSION_TIMEOUT.total_seconds()))
+
+        # Collect user details
+        user_details, next_prompt = collect_user_details(session_id, raw_question)
+        if next_prompt:
+            # Prompt user for the next detail if incomplete
+            return JSONResponse(content={"prompt": next_prompt, "user_details": user_details})
 
         # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
