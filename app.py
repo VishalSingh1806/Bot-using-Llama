@@ -850,7 +850,7 @@ async def chat_endpoint(request: Request):
                 content={
                     "message": (
                         "Hello! Before we start, I'd like to collect some basic details to assist you better.",
-                        "prompt": "What's your name?"
+                        "prompt: What's your name?"
                     )
                 }
             )
