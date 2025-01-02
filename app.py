@@ -825,8 +825,7 @@ def collect_user_details(session_id, raw_question):
     session["user_details"] = user_details
     return user_details, next_prompt
 
-# Updated `chat_endpoint` with user detail collection
-# Updated `chat_endpoint` without user detail collection
+
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     start_time = time.time()  # Measure response time
