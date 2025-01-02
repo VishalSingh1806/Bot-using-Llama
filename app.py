@@ -796,12 +796,7 @@ def collect_user_details(session_id, raw_question):
     Handles the collection of user details for a session.
     Prompts for missing details and validates inputs.
     """
-    user_details = session_memory[session_id].get("user_details", {
-        "name": None,
-        "email": None,
-        "phone": None,
-        "organization": None
-    })
+    user_details = session_memory[session_id]["user_details"]
 
     if user_details["name"] is None:
         user_details["name"] = raw_question
@@ -822,12 +817,12 @@ def collect_user_details(session_id, raw_question):
         user_details["organization"] = raw_question
         next_prompt = f"Thanks {user_details['name']}! How can I assist you today?"
     else:
-        next_prompt = None  # All details are collected
+        next_prompt = None
 
-    # Update session memory with user details
+    # Log the progress of user detail collection
+    logger.info(f"User details for session {session_id}: {user_details}")
     session_memory[session_id]["user_details"] = user_details
     return user_details, next_prompt
-
 
 # Updated `chat_endpoint` with user detail collection
 # Updated `chat_endpoint` without user detail collection
@@ -858,23 +853,24 @@ async def chat_endpoint(request: Request):
                 }
             }
 
-        # Collect user details
+        # Step 1: Collect user details
         user_details, next_prompt = collect_user_details(session_id, raw_question)
         if next_prompt:
-            # Prompt user for the next detail if incomplete
+            # If user details are incomplete, prompt for the next detail
+            logger.info(f"Prompting for user details: {user_details}")
             return JSONResponse(content={"prompt": next_prompt, "user_details": user_details})
 
-        # Step 1: Preprocess the query
+        # Step 2: Preprocess the query
         question = preprocess_query(raw_question, session_id)
+        logger.info(f"Processed query for session {session_id}: {question}")
 
-        # Step 2: Compute query embedding
+        # Step 3: Compute query embedding
         user_embedding = await compute_embedding(question)
 
-        # Step 3: Cache lookup using Redis
+        # Step 4: Cache lookup
         cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
-            # Update session context with cached answer
             update_session_context(session_id, raw_question, cached_answer)
             return JSONResponse(
                 content={
@@ -885,12 +881,12 @@ async def chat_endpoint(request: Request):
                 }
             )
 
-        # Step 4: Database search for the best match
+        # Step 5: Database search for the best match
         db_answer, confidence, source = await query_validated_qa(user_embedding, question)
         if db_answer and confidence >= 0.5:
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
 
-            # Refine the response with LLaMA
+            # Refine response using LLaMA
             try:
                 refined_answer = await refine_with_llama(question, db_answer)
                 if not refined_answer:
@@ -900,7 +896,7 @@ async def chat_endpoint(request: Request):
                 logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
                 refined_answer = db_answer
 
-            # Cache the refined response in Redis
+            # Cache the refined response
             await asyncio.to_thread(
                 redis_client.hset,
                 "query_cache",
@@ -908,7 +904,7 @@ async def chat_endpoint(request: Request):
                 json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
             )
 
-            # Update session context with the refined answer
+            # Update session context
             update_session_context(session_id, raw_question, refined_answer)
 
             return JSONResponse(
@@ -920,11 +916,11 @@ async def chat_endpoint(request: Request):
                 }
             )
 
-        # Step 5: Enhanced fallback response
+        # Step 6: Enhanced fallback response
         fallback_response = await enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
 
-        # Cache the fallback response in Redis
+        # Cache the fallback response
         await asyncio.to_thread(
             redis_client.hset,
             "query_cache",
