@@ -796,32 +796,36 @@ def collect_user_details(session_id, raw_question):
     Handles the collection of user details for a session.
     Prompts for missing details and validates inputs.
     """
-    user_details = session_memory[session_id]["user_details"]
+    session = session_memory[session_id]
+    user_details = session["user_details"]
 
-    if user_details["name"] is None:
-        user_details["name"] = raw_question
-        next_prompt = "Thanks! Can you share your email address?"
-    elif user_details["email"] is None:
-        if is_valid_email(raw_question):
-            user_details["email"] = raw_question
-            next_prompt = "Great! What's your phone number?"
+    if session.get("is_collecting_details", False):  # Only collect details if flag is active
+        if user_details["name"] is None:
+            user_details["name"] = raw_question
+            next_prompt = "Thanks! Can you share your email address?"
+        elif user_details["email"] is None:
+            if is_valid_email(raw_question):
+                user_details["email"] = raw_question
+                next_prompt = "Great! What's your phone number?"
+            else:
+                next_prompt = "The email you entered is invalid. Please provide a valid email address."
+        elif user_details["phone"] is None:
+            if is_valid_phone(raw_question):
+                user_details["phone"] = raw_question
+                next_prompt = "Finally, can you tell me your organization's name?"
+            else:
+                next_prompt = "The phone number you entered is invalid. Please provide a valid phone number."
+        elif user_details["organization"] is None:
+            user_details["organization"] = raw_question
+            next_prompt = f"Thanks {user_details['name']}! How can I assist you today?"
+            session["is_collecting_details"] = False  # Turn off detail collection after completion
         else:
-            next_prompt = "The email you entered is invalid. Please provide a valid email address."
-    elif user_details["phone"] is None:
-        if is_valid_phone(raw_question):
-            user_details["phone"] = raw_question
-            next_prompt = "Finally, can you tell me your organization's name?"
-        else:
-            next_prompt = "The phone number you entered is invalid. Please provide a valid phone number."
-    elif user_details["organization"] is None:
-        user_details["organization"] = raw_question
-        next_prompt = f"Thanks {user_details['name']}! How can I assist you today?"
+            next_prompt = None  # All details are collected
     else:
-        next_prompt = None
+        next_prompt = None  # Not in detail collection mode
 
-    # Log the progress of user detail collection
-    logger.info(f"User details for session {session_id}: {user_details}")
-    session_memory[session_id]["user_details"] = user_details
+    # Update session memory with user details
+    session["user_details"] = user_details
     return user_details, next_prompt
 
 # Updated `chat_endpoint` with user detail collection
@@ -850,24 +854,26 @@ async def chat_endpoint(request: Request):
                     "email": None,
                     "phone": None,
                     "organization": None
-                }
+                },
+                "is_collecting_details": True  # Enable detail collection for new sessions
             }
 
-        # Step 1: Collect user details
-        user_details, next_prompt = collect_user_details(session_id, raw_question)
-        if next_prompt:
-            # If user details are incomplete, prompt for the next detail
-            logger.info(f"Prompting for user details: {user_details}")
-            return JSONResponse(content={"prompt": next_prompt, "user_details": user_details})
+        # Check if user details are being collected
+        if session_memory[session_id]["is_collecting_details"]:
+            user_details, next_prompt = collect_user_details(session_id, raw_question)
+            logger.info(f"User details for session {session_id}: {user_details}")
 
-        # Step 2: Preprocess the query
+            if next_prompt:
+                logger.info(f"Prompting for user details: {user_details}")
+                return JSONResponse(content={"prompt": next_prompt, "user_details": user_details})
+
+        # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
-        logger.info(f"Processed query for session {session_id}: {question}")
 
-        # Step 3: Compute query embedding
+        # Step 2: Compute query embedding
         user_embedding = await compute_embedding(question)
 
-        # Step 4: Cache lookup
+        # Step 3: Cache lookup
         cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
@@ -881,7 +887,7 @@ async def chat_endpoint(request: Request):
                 }
             )
 
-        # Step 5: Database search for the best match
+        # Step 4: Database search for the best match
         db_answer, confidence, source = await query_validated_qa(user_embedding, question)
         if db_answer and confidence >= 0.5:
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
@@ -916,7 +922,7 @@ async def chat_endpoint(request: Request):
                 }
             )
 
-        # Step 6: Enhanced fallback response
+        # Step 5: Enhanced fallback response
         fallback_response = await enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
 
