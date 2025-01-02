@@ -140,9 +140,12 @@ async def precompute_reference_embeddings():
     """Precompute embeddings for reference queries."""
     global reference_embeddings
     try:
-        reference_embeddings = np.vstack(await asyncio.gather(*(compute_embedding(q) for q in reference_queries)))
+        embeddings = await asyncio.gather(*(compute_embedding(q) for q in reference_queries))
+        reference_embeddings = np.vstack(embeddings)
+        logger.info("Successfully precomputed reference embeddings.")
     except Exception as e:
         logger.error(f"Failed to precompute reference embeddings: {e}")
+        reference_embeddings = np.zeros((len(reference_queries), 384))  # Fallback
 
 
 # Define lifespan event handlers
@@ -152,11 +155,10 @@ async def lifespan(app: FastAPI):
 
     logger.info("Application startup: Initializing resources.")
 
-    # Test database connection and structure
-    logger.info("Testing database connection...")
+    # Test database connection
     test_db_connection()
 
-    # Load Sentence-BERT model (cached)
+    # Load Sentence-BERT model
     load_sentence_bert()
 
     # Precompute static embeddings for reference queries
@@ -170,12 +172,12 @@ async def lifespan(app: FastAPI):
         )
         llama_model = AutoModelForCausalLM.from_pretrained(
             "meta-llama/Llama-2-7b-chat-hf",
-            device_map="auto",  # Automatically distribute across available GPUs
+            device_map="auto",  # Automatically distribute across GPUs
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True
         )
         llama_model.eval()
-        logger.info("LLaMA model and tokenizer loaded successfully during startup.")
+        logger.info("LLaMA model and tokenizer loaded successfully.")
     except Exception as e:
         logger.error(f"Failed to load LLaMA model and tokenizer during startup: {e}")
         raise RuntimeError("Model loading failed during startup.")
@@ -184,6 +186,7 @@ async def lifespan(app: FastAPI):
     yield
     save_keywords_to_file()  # Save keywords during shutdown
     logger.info("Application shutdown: Cleaning up resources.")
+
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(lifespan=lifespan)
