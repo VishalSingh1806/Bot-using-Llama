@@ -773,49 +773,7 @@ def evict_oldest_sessions():
 
     return user_details, next_question
 
-def is_valid_email(email):
-    """Validate email format."""
-    re.match(r"[^@]+@[^@]+\.[^@]+", raw_question)
-
-def is_valid_phone(phone):
-    """Validate phone number format."""
-    re.match(r"^\+?\d{7,15}$", raw_question)
-
-def collect_user_details(session_id, raw_question):
-    session = session_memory[session_id]
-    user_details = session["user_details"]
-
-    # Collect details sequentially
-    if user_details["name"] is None:
-        logger.info(f"Session {session_id}: Collecting name.")
-        user_details["name"] = raw_question
-        next_prompt = "Thanks! Can you share your email address?"
-    elif user_details["email"] is None:
-        logger.info(f"Session {session_id}: Collecting email.")
-        if is_valid_email(raw_question):
-            user_details["email"] = raw_question
-            next_prompt = "Great! What's your phone number?"
-        else:
-            next_prompt = "The email you entered is invalid. Please provide a valid email address."
-    elif user_details["phone"] is None:
-        logger.info(f"Session {session_id}: Collecting phone.")
-        if is_valid_phone(raw_question):
-            user_details["phone"] = raw_question
-            next_prompt = "Finally, can you tell me your organization's name?"
-        else:
-            next_prompt = "The phone number you entered is invalid. Please provide a valid phone number."
-    elif user_details["organization"] is None:
-        logger.info(f"Session {session_id}: Collecting organization.")
-        user_details["organization"] = raw_question
-        next_prompt = None  # No more details to collect
-    else:
-        logger.info(f"Session {session_id}: All details collected.")
-        next_prompt = None  # All details collected
-
-    # Update session memory
-    session["user_details"] = user_details
-    return user_details, next_prompt
-
+# Updated `chat_endpoint` to remove `await` from `cache_lookup`
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     start_time = time.time()  # Measure response time
@@ -828,68 +786,48 @@ async def chat_endpoint(request: Request):
         if not raw_question:
             logger.warning("Empty message received.")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
-        logger.info(f"Session {session_id}: Received input: {raw_question}")
+        logger.info(f"Session {session_id}: Received question: {raw_question}")
 
-        # Initialize session memory if not already present
-        if session_id not in session_memory:
-            session_memory[session_id] = {
-                "history": [],
+        # Key for session in Redis
+        session_key = f"session:{session_id}"
+        session_data = await asyncio.to_thread(redis_client.hgetall, session_key)
+
+        # Initialize session if it doesn't exist
+        if not session_data:
+            session_data = {
+                "history": json.dumps([]),  # Store history as JSON string
                 "context": "",
-                "user_details": {
-                    "name": None,
-                    "email": None,
-                    "phone": None,
-                    "organization": None
-                },
-                "is_collecting_details": True  # Start with detail collection mode
+                "last_interaction": datetime.utcnow().isoformat(),
             }
             logger.info(f"New session initialized: {session_id}")
 
-            # Send an introductory message when the session starts
-            return JSONResponse(
-                content={
-                    "message": "Hello! Before we start, I'd like to collect some basic details to assist you better.",
-                    "prompt": "What's your name?"
-                }
-            )
+        # Update session history
+        history = json.loads(session_data.get("history", "[]"))
+        history.append(
+            {
+                "query": raw_question,
+                "response": "Processing...",
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        )
+        session_data["history"] = json.dumps(history)
+        session_data["last_interaction"] = datetime.utcnow().isoformat()
 
-        session = session_memory[session_id]
+        # Save session data to Redis
+        await asyncio.to_thread(redis_client.hmset, session_key, session_data)
+        await asyncio.to_thread(redis_client.expire, session_key, int(SESSION_TIMEOUT.total_seconds()))
 
-        # Handle user detail collection
-        if session["is_collecting_details"]:
-            user_details = session["user_details"]
-        
-            if user_details["name"] is None:
-                user_details["name"] = raw_question
-                next_prompt = "Thanks! Can you share your email address?"
-            elif user_details["email"] is None:
-                if re.match(r"[^@]+@[^@]+\.[^@]+", raw_question):  # Validate email
-                    user_details["email"] = raw_question
-                    next_prompt = "Great! What's your phone number?"
-                else:
-                    return JSONResponse(content={"message": "Invalid email. Please provide a valid email address."})
-            elif user_details["phone"] is None:
-                if re.match(r"^\+?\d{7,15}$", raw_question):  # Validate phone
-                    user_details["phone"] = raw_question
-                    next_prompt = "Finally, can you tell me your organization's name?"
-                else:
-                    return JSONResponse(content={"message": "Invalid phone number. Please provide a valid number."})
-            elif user_details["organization"] is None:
-                user_details["organization"] = raw_question
-                session["is_collecting_details"] = False  # End detail collection
-                next_prompt = f"Thanks {user_details['name']}! How can I assist you today?"
-        
-            logger.info(f"Session {session_id}: Collected details: {user_details}")
-            return JSONResponse(content={"message": next_prompt})
-
-        # Handle normal conversation flow
+        # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
 
-        # Step 1: Check cache for response
+        # Step 2: Compute query embedding
         user_embedding = await compute_embedding(question)
+
+        # Step 3: Cache lookup using Redis
         cached_answer, cached_similarity = cache_lookup(user_embedding)
         if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
+            # Update session context with cached answer
             update_session_context(session_id, raw_question, cached_answer)
             return JSONResponse(
                 content={
@@ -900,12 +838,12 @@ async def chat_endpoint(request: Request):
                 }
             )
 
-        # Step 2: Query the database
+        # Step 4: Database search for the best match
         db_answer, confidence, source = await query_validated_qa(user_embedding, question)
         if db_answer and confidence >= 0.5:
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
 
-            # Refine response using LLaMA
+            # Refine the response with LLaMA
             try:
                 refined_answer = await refine_with_llama(question, db_answer)
                 if not refined_answer:
@@ -915,7 +853,7 @@ async def chat_endpoint(request: Request):
                 logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
                 refined_answer = db_answer
 
-            # Cache the refined response
+            # Cache the refined response in Redis
             await asyncio.to_thread(
                 redis_client.hset,
                 "query_cache",
@@ -923,6 +861,7 @@ async def chat_endpoint(request: Request):
                 json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
             )
 
+            # Update session context with the refined answer
             update_session_context(session_id, raw_question, refined_answer)
 
             return JSONResponse(
@@ -934,11 +873,11 @@ async def chat_endpoint(request: Request):
                 }
             )
 
-        # Step 3: Fallback response
+        # Step 5: Enhanced fallback response
         fallback_response = await enhanced_fallback_response(question, session_id)
-        logger.info(f"Fallback response for session {session_id}: {fallback_response}")
+        logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
 
-        # Cache the fallback response
+        # Cache the fallback response in Redis
         await asyncio.to_thread(
             redis_client.hset,
             "query_cache",
@@ -946,13 +885,14 @@ async def chat_endpoint(request: Request):
             json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
         )
 
+        # Update session context with fallback response
         update_session_context(session_id, raw_question, fallback_response)
 
         return JSONResponse(
             content={
                 "answer": fallback_response,
                 "confidence": 0.5,
-                "source": "fallback",
+                "source": "fuzzy fallback",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
         )
@@ -967,3 +907,4 @@ async def chat_endpoint(request: Request):
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
     finally:
         REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
+
