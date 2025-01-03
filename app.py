@@ -908,3 +908,46 @@ async def chat_endpoint(request: Request):
     finally:
         REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
 
+#collecting user details via form view
+@app.post("/collect_user_data")
+async def collect_user_data(request: Request):
+    try:
+        # Parse form data
+        data = await request.json()
+        name = data.get("name")
+        email = data.get("email")
+        phone = data.get("phone")
+        organization = data.get("organization")
+
+        # Validate required fields
+        if not all([name, email, phone, organization]):
+            logger.warning("Incomplete user data received.")
+            return JSONResponse(
+                content={"message": "Please provide all required fields: name, email, phone, and organization."},
+                status_code=400,
+            )
+
+        # Perform optional validation (e.g., email and phone format)
+        if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+            logger.warning("Invalid email format.")
+            return JSONResponse(content={"message": "Invalid email format."}, status_code=400)
+        if not re.match(r"^\+?\d{7,15}$", phone):
+            logger.warning("Invalid phone number format.")
+            return JSONResponse(content={"message": "Invalid phone number format."}, status_code=400)
+
+        # Save user data to a database or session (stubbed here)
+        user_data = {
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "organization": organization,
+        }
+        logger.info(f"User data collected: {user_data}")
+
+        # Return success response
+        return JSONResponse(content={"message": "User data collected successfully.", "user_data": user_data})
+
+    except Exception as e:
+        logger.exception("Error in collect_user_data endpoint.")
+        return JSONResponse(content={"message": "An error occurred while collecting user data."}, status_code=500)
+
