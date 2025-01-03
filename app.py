@@ -775,11 +775,11 @@ def evict_oldest_sessions():
 
 def is_valid_email(email):
     """Validate email format."""
-    return re.match(r"[^@]+@[^@]+\.[^@]+", email)
+    re.match(r"[^@]+@[^@]+\.[^@]+", raw_question)
 
 def is_valid_phone(phone):
     """Validate phone number format."""
-    return re.match(r"^\+?\d{7,15}$", phone)
+    re.match(r"^\+?\d{7,15}$", raw_question)
 
 def collect_user_details(session_id, raw_question):
     session = session_memory[session_id]
@@ -858,18 +858,18 @@ async def chat_endpoint(request: Request):
         # Handle user detail collection
         if session["is_collecting_details"]:
             user_details = session["user_details"]
-
+        
             if user_details["name"] is None:
                 user_details["name"] = raw_question
                 next_prompt = "Thanks! Can you share your email address?"
             elif user_details["email"] is None:
-                if re.match(r"[^@]+@[^@]+\\.[^@]+", raw_question):  # Validate email
+                if re.match(r"[^@]+@[^@]+\.[^@]+", raw_question):  # Validate email
                     user_details["email"] = raw_question
                     next_prompt = "Great! What's your phone number?"
                 else:
                     return JSONResponse(content={"message": "Invalid email. Please provide a valid email address."})
             elif user_details["phone"] is None:
-                if re.match(r"^\\+?\\d{7,15}$", raw_question):  # Validate phone
+                if re.match(r"^\+?\d{7,15}$", raw_question):  # Validate phone
                     user_details["phone"] = raw_question
                     next_prompt = "Finally, can you tell me your organization's name?"
                 else:
@@ -878,7 +878,7 @@ async def chat_endpoint(request: Request):
                 user_details["organization"] = raw_question
                 session["is_collecting_details"] = False  # End detail collection
                 next_prompt = f"Thanks {user_details['name']}! How can I assist you today?"
-
+        
             logger.info(f"Session {session_id}: Collected details: {user_details}")
             return JSONResponse(content={"message": next_prompt})
 
