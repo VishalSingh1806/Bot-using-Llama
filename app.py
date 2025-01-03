@@ -816,89 +816,21 @@ def collect_user_details(session_id, raw_question):
     session["user_details"] = user_details
     return user_details, next_prompt
 
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
-import time
-import uuid
-import re
-import logging
-from collections import defaultdict
-import asyncio
-
-# Initialize FastAPI app
-app = FastAPI()
-
-# Logger setup
-logger = logging.getLogger("EPR_Chatbot")
-logging.basicConfig(level=logging.INFO)
-
-# Session memory to store user details and session-specific data
-session_memory = defaultdict(lambda: {
-    "history": [],
-    "context": "",
-    "user_details": {
-        "name": None,
-        "email": None,
-        "phone": None,
-        "organization": None
-    },
-    "is_collecting_details": True,
-    "original_query": None  # Store the user's first query
-})
-
-# Email and phone validation
-
-def is_valid_email(email):
-    return re.match(r"[^@]+@[^@]+\.[^@]+", email)
-
-def is_valid_phone(phone):
-    return re.match(r"^\+?\d{7,15}$", phone)
-
-# Function to collect user details sequentially
-def collect_user_details(session_id, raw_question):
-    session = session_memory[session_id]
-    user_details = session["user_details"]
-
-    if user_details["name"] is None:
-        user_details["name"] = raw_question
-        next_prompt = "Thanks! Can you share your email address?"
-    elif user_details["email"] is None:
-        if is_valid_email(raw_question):
-            user_details["email"] = raw_question
-            next_prompt = "Great! What's your phone number?"
-        else:
-            next_prompt = "The email you entered is invalid. Please provide a valid email address."
-    elif user_details["phone"] is None:
-        if is_valid_phone(raw_question):
-            user_details["phone"] = raw_question
-            next_prompt = "Finally, can you tell me your organization's name?"
-        else:
-            next_prompt = "The phone number you entered is invalid. Please provide a valid phone number."
-    elif user_details["organization"] is None:
-        user_details["organization"] = raw_question
-        next_prompt = None  # No more details to collect
-    else:
-        next_prompt = None
-
-    session["user_details"] = user_details
-    return user_details, next_prompt
-
 @app.post("/chat")
 async def chat_endpoint(request: Request):
-    start_time = time.time()
+    start_time = time.time()  # Measure response time
     try:
         # Parse request data
         data = await request.json()
         raw_question = data.get("message", "").strip()
-        session_id = data.get("session_id", str(uuid.uuid4()))
+        session_id = data.get("session_id", str(uuid.uuid4()))  # Generate session ID if not provided
 
         if not raw_question:
             logger.warning("Empty message received.")
             raise HTTPException(status_code=400, detail="Message cannot be empty.")
-
         logger.info(f"Session {session_id}: Received input: {raw_question}")
 
-        # Initialize session memory if it doesn't exist
+        # Initialize session memory if not already present
         if session_id not in session_memory:
             session_memory[session_id] = {
                 "history": [],
@@ -909,43 +841,129 @@ async def chat_endpoint(request: Request):
                     "phone": None,
                     "organization": None
                 },
-                "is_collecting_details": True,
-                "original_query": None
+                "is_collecting_details": True  # Start with detail collection mode
             }
+            logger.info(f"New session initialized: {session_id}")
+
+            # Send an introductory message when the session starts
             return JSONResponse(
                 content={
-                    "message": (
-                        "Hello! Before we start, I'd like to collect some basic details to assist you better. "
-                        "What's your name?"
-                    )
+                    "message": "Hello! Before we start, I'd like to collect some basic details to assist you better.",
+                    "prompt": "What's your name?"
                 }
             )
 
         session = session_memory[session_id]
 
-        # Collect user details if required
+        # Handle user detail collection
         if session["is_collecting_details"]:
-            user_details, next_prompt = collect_user_details(session_id, raw_question)
-            logger.info(f"User details for session {session_id}: {user_details}")
+            user_details = session["user_details"]
 
-            if next_prompt:
-                logger.info(f"Asking for more user details: {next_prompt}")
-                return JSONResponse(content={"prompt": next_prompt, "user_details": user_details})
+            if user_details["name"] is None:
+                user_details["name"] = raw_question
+                next_prompt = "Thanks! Can you share your email address?"
+            elif user_details["email"] is None:
+                if re.match(r"[^@]+@[^@]+\\.[^@]+", raw_question):  # Validate email
+                    user_details["email"] = raw_question
+                    next_prompt = "Great! What's your phone number?"
+                else:
+                    return JSONResponse(content={"message": "Invalid email. Please provide a valid email address."})
+            elif user_details["phone"] is None:
+                if re.match(r"^\\+?\\d{7,15}$", raw_question):  # Validate phone
+                    user_details["phone"] = raw_question
+                    next_prompt = "Finally, can you tell me your organization's name?"
+                else:
+                    return JSONResponse(content={"message": "Invalid phone number. Please provide a valid number."})
+            elif user_details["organization"] is None:
+                user_details["organization"] = raw_question
+                session["is_collecting_details"] = False  # End detail collection
+                next_prompt = f"Thanks {user_details['name']}! How can I assist you today?"
 
-            # Switch to normal conversation mode after collecting details
-            session["is_collecting_details"] = False
-            logger.info(f"All user details collected for session {session_id}: {user_details}")
-            return JSONResponse(content={"message": f"Thanks {user_details['name']}! How can I assist you today?"})
+            logger.info(f"Session {session_id}: Collected details: {user_details}")
+            return JSONResponse(content={"message": next_prompt})
 
-        # Handle normal conversation after details are collected
-        # Here, include logic to handle the user's query as needed
-        return JSONResponse(content={"message": f"Handling your query: {raw_question}"})
+        # Handle normal conversation flow
+        question = preprocess_query(raw_question, session_id)
+
+        # Step 1: Check cache for response
+        user_embedding = await compute_embedding(question)
+        cached_answer, cached_similarity = cache_lookup(user_embedding)
+        if cached_answer and cached_similarity >= CACHE_THRESHOLD:
+            logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
+            update_session_context(session_id, raw_question, cached_answer)
+            return JSONResponse(
+                content={
+                    "answer": cached_answer,
+                    "confidence": float(cached_similarity),
+                    "source": "cache",
+                    "response_time": f"{time.time() - start_time:.2f} seconds",
+                }
+            )
+
+        # Step 2: Query the database
+        db_answer, confidence, source = await query_validated_qa(user_embedding, question)
+        if db_answer and confidence >= 0.5:
+            logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
+
+            # Refine response using LLaMA
+            try:
+                refined_answer = await refine_with_llama(question, db_answer)
+                if not refined_answer:
+                    logger.warning(f"LLaMA returned an empty response for session {session_id}. Using database answer.")
+                    refined_answer = db_answer
+            except Exception as llama_error:
+                logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
+                refined_answer = db_answer
+
+            # Cache the refined response
+            await asyncio.to_thread(
+                redis_client.hset,
+                "query_cache",
+                question,
+                json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
+            )
+
+            update_session_context(session_id, raw_question, refined_answer)
+
+            return JSONResponse(
+                content={
+                    "answer": refined_answer,
+                    "confidence": float(confidence),
+                    "source": source,
+                    "response_time": f"{time.time() - start_time:.2f} seconds",
+                }
+            )
+
+        # Step 3: Fallback response
+        fallback_response = await enhanced_fallback_response(question, session_id)
+        logger.info(f"Fallback response for session {session_id}: {fallback_response}")
+
+        # Cache the fallback response
+        await asyncio.to_thread(
+            redis_client.hset,
+            "query_cache",
+            question,
+            json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
+        )
+
+        update_session_context(session_id, raw_question, fallback_response)
+
+        return JSONResponse(
+            content={
+                "answer": fallback_response,
+                "confidence": 0.5,
+                "source": "fallback",
+                "response_time": f"{time.time() - start_time:.2f} seconds",
+            }
+        )
 
     except HTTPException as e:
         logger.warning(f"HTTP error occurred: {e.detail}")
+        ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise e
     except Exception as e:
         logger.exception("Unhandled exception in /chat endpoint.")
+        ERROR_COUNT.inc()  # Increment error counter for Prometheus
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
     finally:
-        logger.info(f"Request processing time: {time.time() - start_time:.2f} seconds")
+        REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
