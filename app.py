@@ -773,14 +773,18 @@ def evict_oldest_sessions():
 
     return user_details, next_question
 
-# Updated `chat_endpoint` to remove `await` from `cache_lookup`
+# Updated /chat endpoint
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     start_time = time.time()  # Measure response time
     try:
         # Parse request data
         data = await request.json()
-        session_id = data.get("session_id", str(uuid.uuid4()))  # Generate session ID if not provided
+        session_id = data.get("session_id", None)
+
+        if not session_id:
+            session_id = str(uuid.uuid4())  # Generate a new session ID if not provided
+            logger.info(f"Generated new session ID: {session_id}")
 
         # Key for session in Redis
         session_key = f"session:{session_id}"
@@ -804,6 +808,7 @@ async def chat_endpoint(request: Request):
                 content={
                     "message": "Before we start, please provide your details.",
                     "redirect_to": "/collect_user_data",
+                    "session_id": session_id,
                 },
                 status_code=200,
             )
@@ -923,16 +928,22 @@ async def chat_endpoint(request: Request):
     finally:
         REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
 
-#collecting user details via form view
+
+# Updated /collect_user_data endpoint
 @app.post("/collect_user_data")
 async def collect_user_data(request: Request):
     try:
         # Parse form data
         data = await request.json()
+        session_id = data.get("session_id")
         name = data.get("name")
         email = data.get("email")
         phone = data.get("phone")
         organization = data.get("organization")
+
+        if not session_id:
+            logger.error("Missing session ID in user data submission.")
+            return JSONResponse(content={"message": "Session ID is required."}, status_code=400)
 
         # Validate required fields
         if not all([name, email, phone, organization]):
@@ -951,7 +962,6 @@ async def collect_user_data(request: Request):
             return JSONResponse(content={"message": "Invalid phone number format."}, status_code=400)
 
         # Save user data to Redis
-        session_id = data.get("session_id")
         session_key = f"session:{session_id}"
         session_data = await asyncio.to_thread(redis_client.hgetall, session_key)
 
