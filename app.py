@@ -780,7 +780,11 @@ async def chat_endpoint(request: Request):
     try:
         # Parse request data
         data = await request.json()
-        session_id = data.get("session_id", str(uuid.uuid4()))  # Generate session ID if not provided
+        session_id = data.get("session_id", None)
+
+        if not session_id:
+            session_id = str(uuid.uuid4())  # Generate a new session ID if not provided
+            logger.info(f"Generated new session ID: {session_id}")
 
         # Key for session in Redis
         session_key = f"session:{session_id}"
@@ -797,24 +801,24 @@ async def chat_endpoint(request: Request):
             await asyncio.to_thread(redis_client.hmset, session_key, session_data)
             logger.info(f"New session initialized: {session_id}")
 
-        # Handle missing or empty message
-        raw_question = data.get("message", "").strip()
-        if not raw_question:
-            logger.info(f"Session {session_id}: Checking user data collection status.")
-            if session_data.get("user_data_collected", "false") == "false":
-                logger.info(f"Session {session_id}: Prompting for user data collection.")
-                return JSONResponse(
-                    content={
-                        "message": "Before we start, please provide your details.",
-                        "redirect_to": "/collect_user_data",
-                        "session_id": session_id,  # Include session ID in response
-                    },
-                    status_code=200,
-                )
-            else:
-                logger.warning("Empty message received.")
-                raise HTTPException(status_code=400, detail="Message cannot be empty.")
+        # Check if user data is collected
+        if session_data.get("user_data_collected", "false") == "false":
+            logger.info(f"Session {session_id}: Prompting for user data collection.")
+            return JSONResponse(
+                content={
+                    "message": "Before we start, please provide your details.",
+                    "redirect_to": "/collect_user_data",
+                    "session_id": session_id,
+                },
+                status_code=200,
+            )
 
+        # Proceed with normal conversation flow
+        raw_question = data.get("message", "").strip()
+
+        if not raw_question:
+            logger.warning("Empty message received.")
+            raise HTTPException(status_code=400, detail="Message cannot be empty.")
         logger.info(f"Session {session_id}: Received question: {raw_question}")
 
         # Update session history
@@ -923,7 +927,6 @@ async def chat_endpoint(request: Request):
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
     finally:
         REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
-
 
 # Updated /collect_user_data endpoint
 @app.post("/collect_user_data")
