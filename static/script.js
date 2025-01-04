@@ -1,3 +1,4 @@
+
 // Toggle Chat Window
 function toggleChat() {
     const chatWindow = document.getElementById("chatWindow");
@@ -60,35 +61,17 @@ function displayForm() {
 
     const formHtml = `
         <div class="bot-message fade-in">
-            <div class="form-container">
-                <h3>Please provide your details</h3>
-                <form id="userForm">
-                    <div class="form-group">
-                        <label for="name">Name:</label>
-                        <input type="text" id="name" placeholder="Your full name" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="email">Email:</label>
-                        <input type="email" id="email" placeholder="Your email address" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="phone">Phone:</label>
-                        <input type="text" id="phone" placeholder="Your phone number" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="organization">Organization:</label>
-                        <input type="text" id="organization" placeholder="Your organization name" required>
-                    </div>
-                    <div class="form-actions">
-                        <button type="button" class="submit-button" onclick="submitForm()">Submit</button>
-                    </div>
-                </form>
-            </div>
+            <form id="userForm">
+                <label>Name: <input type="text" id="name" required></label><br>
+                <label>Email: <input type="email" id="email" required></label><br>
+                <label>Phone: <input type="text" id="phone" required></label><br>
+                <label>Organization: <input type="text" id="organization" required></label><br>
+                <button type="button" onclick="submitForm()">Submit</button>
+            </form>
         </div>`;
     chatContent.innerHTML += formHtml;
     chatContent.scrollTop = chatContent.scrollHeight;
 }
-
 
 // Submit Form Data
 async function submitForm() {
