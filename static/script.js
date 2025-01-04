@@ -62,7 +62,7 @@ function displayForm() {
     const formHtml = `
         <div class="bot-message fade-in">
             <div class="form-container">
-                <h3>Please provide your details</h3>
+                <h3 id="formHeading">Please provide your details</h3>
                 <form id="userForm">
                     <div class="form-group">
                         <label for="name">Name:</label>
@@ -115,9 +115,14 @@ async function submitForm() {
             if (response.ok) {
                 const data = await response.json();
 
-                // Remove the form and update the message
+                // Update the heading dynamically
+                const formHeading = document.getElementById("formHeading");
+                if (formHeading) {
+                    formHeading.innerText = "Thanks for sharing your details! Now let's start our conversation about EPR.";
+                }
+
+                // Remove the form
                 document.getElementById("userForm").remove();
-                addMessageToChat("Thanks for sharing your details! Now let's start our conversation about EPR.", "bot-message");
 
             } else {
                 addMessageToChat("Error submitting your details. Please try again.", "bot-message");
