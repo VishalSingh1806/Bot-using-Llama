@@ -8,8 +8,7 @@ function toggleChat() {
 
         const chatContent = document.getElementById("chatContent");
         if (chatContent.children.length === 0) {
-            // Trigger backend to fetch form or welcome message
-            triggerBackendForForm();
+            triggerBackendForForm(); // Trigger backend for the form or welcome message
         }
     }
 }
@@ -39,6 +38,7 @@ async function triggerBackendForForm() {
 
         if (response.ok) {
             const data = await response.json();
+            localStorage.setItem("session_id", data.session_id); // Save session ID
             if (data.redirect_to === "/collect_user_data") {
                 displayForm(); // Call function to display the form
             } else if (data.message) {
@@ -96,6 +96,7 @@ async function submitForm() {
             if (response.ok) {
                 const data = await response.json();
                 addMessageToChat(data.message || "Details collected successfully!", "bot-message");
+                document.getElementById("userForm").remove(); // Remove form on success
             } else {
                 addMessageToChat("Error submitting your details. Please try again.", "bot-message");
             }
@@ -118,16 +119,12 @@ function addMessageToChat(message, className) {
     chatContent.scrollTop = chatContent.scrollHeight;
 }
 
-
 // Handle Enter Key
 function checkEnter(event) {
     if (event.key === "Enter") {
         sendMessage();
     }
 }
-
-// Define the backend URL dynamically
-const BACKEND_URL = "http://34.41.145.80:8000/chat";
 
 // Send User Message
 async function sendMessage() {
@@ -145,10 +142,13 @@ async function sendMessage() {
         chatContent.scrollTop = chatContent.scrollHeight;
 
         try {
-            const response = await fetch(BACKEND_URL, {
+            const response = await fetch(BACKEND_CHAT_URL, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message: userMessage }),
+                body: JSON.stringify({
+                    message: userMessage,
+                    session_id: localStorage.getItem("session_id"),
+                }),
             });
 
             chatContent.removeChild(typingIndicator);
@@ -169,16 +169,4 @@ async function sendMessage() {
             console.error("Fetch error:", error);
         }
     }
-}
-
-
-
-// Add Message to Chat
-function addMessageToChat(message, className) {
-    const chatContent = document.getElementById("chatContent");
-    const messageElement = document.createElement("div");
-    messageElement.className = className;
-    messageElement.innerText = message;
-    chatContent.appendChild(messageElement);
-    chatContent.scrollTop = chatContent.scrollHeight;
 }
