@@ -114,8 +114,11 @@ async function submitForm() {
 
             if (response.ok) {
                 const data = await response.json();
-                addMessageToChat(data.message || "Details collected successfully!", "bot-message");
-                document.getElementById("userForm").remove(); // Remove form on success
+
+                // Remove the form and update the message
+                document.getElementById("userForm").remove();
+                addMessageToChat("Thanks for sharing your details! Now let's start our conversation about EPR.", "bot-message");
+
             } else {
                 addMessageToChat("Error submitting your details. Please try again.", "bot-message");
             }
@@ -127,6 +130,7 @@ async function submitForm() {
         addMessageToChat("Please fill out all fields before submitting.", "bot-message");
     }
 }
+
 
 // Add Message to Chat
 function addMessageToChat(message, className) {
