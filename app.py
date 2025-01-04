@@ -780,13 +780,7 @@ async def chat_endpoint(request: Request):
     try:
         # Parse request data
         data = await request.json()
-        raw_question = data.get("message", "").strip()
         session_id = data.get("session_id", str(uuid.uuid4()))  # Generate session ID if not provided
-
-        if not raw_question:
-            logger.warning("Empty message received.")
-            raise HTTPException(status_code=400, detail="Message cannot be empty.")
-        logger.info(f"Session {session_id}: Received question: {raw_question}")
 
         # Key for session in Redis
         session_key = f"session:{session_id}"
@@ -808,11 +802,19 @@ async def chat_endpoint(request: Request):
             logger.info(f"Session {session_id}: Prompting for user data collection.")
             return JSONResponse(
                 content={
-                    "message": "Before we proceed, I need some details from you.",
+                    "message": "Before we start, please provide your details.",
                     "redirect_to": "/collect_user_data",
                 },
                 status_code=200,
             )
+
+        # Proceed with normal conversation flow
+        raw_question = data.get("message", "").strip()
+
+        if not raw_question:
+            logger.warning("Empty message received.")
+            raise HTTPException(status_code=400, detail="Message cannot be empty.")
+        logger.info(f"Session {session_id}: Received question: {raw_question}")
 
         # Update session history
         history = json.loads(session_data.get("history", "[]"))
