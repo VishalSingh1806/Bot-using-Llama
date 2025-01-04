@@ -928,6 +928,7 @@ async def chat_endpoint(request: Request):
     finally:
         REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
 
+
 # Updated /collect_user_data endpoint
 @app.post("/collect_user_data")
 async def collect_user_data(request: Request):
