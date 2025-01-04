@@ -782,8 +782,9 @@ async def chat_endpoint(request: Request):
         data = await request.json()
         session_id = data.get("session_id", None)
 
+        # Generate a new session ID if not provided
         if not session_id:
-            session_id = str(uuid.uuid4())  # Generate a new session ID if not provided
+            session_id = str(uuid.uuid4())
             logger.info(f"Generated new session ID: {session_id}")
 
         # Key for session in Redis
@@ -796,14 +797,22 @@ async def chat_endpoint(request: Request):
                 "history": json.dumps([]),  # Store history as JSON string
                 "context": "",
                 "last_interaction": datetime.utcnow().isoformat(),
-                "user_data_collected": "false",  # Add flag for user data collection
+                "user_data_collected": "false",  # Flag for user data collection
             }
             await asyncio.to_thread(redis_client.hmset, session_key, session_data)
             logger.info(f"New session initialized: {session_id}")
+            return JSONResponse(
+                content={
+                    "message": "Before we start, please provide your details.",
+                    "redirect_to": "/collect_user_data",
+                    "session_id": session_id,
+                },
+                status_code=200,
+            )
 
         # Check if user data is collected
         if session_data.get("user_data_collected", "false") == "false":
-            logger.info(f"Session {session_id}: Prompting for user data collection.")
+            logger.info(f"Session {session_id}: User data not collected. Prompting for user data collection.")
             return JSONResponse(
                 content={
                     "message": "Before we start, please provide your details.",
@@ -817,8 +826,12 @@ async def chat_endpoint(request: Request):
         raw_question = data.get("message", "").strip()
 
         if not raw_question:
-            logger.warning("Empty message received.")
-            raise HTTPException(status_code=400, detail="Message cannot be empty.")
+            logger.info(f"Session {session_id}: Empty message received. Returning session info.")
+            return JSONResponse(
+                content={"message": "Welcome back! Please type your question.", "session_id": session_id},
+                status_code=200,
+            )
+
         logger.info(f"Session {session_id}: Received question: {raw_question}")
 
         # Update session history
