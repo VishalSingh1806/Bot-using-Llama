@@ -798,6 +798,7 @@ async def chat_endpoint(request: Request):
                 "context": "",
                 "last_interaction": datetime.utcnow().isoformat(),
                 "user_data_collected": "false",  # Flag for user data collection
+                "user_name": "",  # Placeholder for user name
             }
             await asyncio.to_thread(redis_client.hmset, session_key, session_data)
             logger.info(f"New session initialized: {session_id}")
@@ -822,13 +823,20 @@ async def chat_endpoint(request: Request):
                 status_code=200,
             )
 
-        # Proceed with normal conversation flow
-        raw_question = data.get("message", "").strip()
+        # Fetch user's name for personalization
+        user_name = session_data.get("user_name", "").strip()
 
+        # Check for empty message or welcome scenario
+        raw_question = data.get("message", "").strip()
         if not raw_question:
-            logger.info(f"Session {session_id}: Empty message received. Returning session info.")
+            welcome_message = (
+                f"Welcome back {user_name}, how can I help you today?"
+                if user_name
+                else "Welcome back! Please type your question."
+            )
+            logger.info(f"Session {session_id}: Empty message received. Sending welcome message.")
             return JSONResponse(
-                content={"message": "Welcome back! Please type your question.", "session_id": session_id},
+                content={"message": welcome_message, "session_id": session_id},
                 status_code=200,
             )
 
