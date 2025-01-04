@@ -798,8 +798,21 @@ async def chat_endpoint(request: Request):
                 "history": json.dumps([]),  # Store history as JSON string
                 "context": "",
                 "last_interaction": datetime.utcnow().isoformat(),
+                "user_data_collected": "false",  # Add flag for user data collection
             }
+            await asyncio.to_thread(redis_client.hmset, session_key, session_data)
             logger.info(f"New session initialized: {session_id}")
+
+        # Check if user data is collected
+        if session_data.get("user_data_collected", "false") == "false":
+            logger.info(f"Session {session_id}: Prompting for user data collection.")
+            return JSONResponse(
+                content={
+                    "message": "Before we proceed, I need some details from you.",
+                    "redirect_to": "/collect_user_data",
+                },
+                status_code=200,
+            )
 
         # Update session history
         history = json.loads(session_data.get("history", "[]"))
@@ -935,19 +948,22 @@ async def collect_user_data(request: Request):
             logger.warning("Invalid phone number format.")
             return JSONResponse(content={"message": "Invalid phone number format."}, status_code=400)
 
-        # Save user data to a database or session (stubbed here)
-        user_data = {
-            "name": name,
-            "email": email,
-            "phone": phone,
-            "organization": organization,
-        }
-        logger.info(f"User data collected: {user_data}")
+        # Save user data to Redis
+        session_id = data.get("session_id")
+        session_key = f"session:{session_id}"
+        session_data = await asyncio.to_thread(redis_client.hgetall, session_key)
 
-        # Return success response
-        return JSONResponse(content={"message": "User data collected successfully.", "user_data": user_data})
+        session_data["user_data"] = json.dumps(
+            {"name": name, "email": email, "phone": phone, "organization": organization}
+        )
+        session_data["user_data_collected"] = "true"
+        await asyncio.to_thread(redis_client.hmset, session_key, session_data)
+
+        logger.info(f"User data collected for session {session_id}: {session_data['user_data']}")
+
+        # Acknowledge data collection
+        return JSONResponse(content={"message": "User data collected successfully. You can now ask your question."})
 
     except Exception as e:
         logger.exception("Error in collect_user_data endpoint.")
         return JSONResponse(content={"message": "An error occurred while collecting user data."}, status_code=500)
-
