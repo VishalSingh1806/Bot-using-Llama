@@ -18,97 +18,104 @@ function toggleChat() {
 const BACKEND_CHAT_URL = "http://34.41.145.80:8000/chat";
 const BACKEND_FORM_URL = "http://34.41.145.80:8000/collect_user_data";
 
-// Trigger Backend for Form
-async function triggerBackendForForm() {
-    const chatContent = document.getElementById("chatContent");
+// Store session ID globally
+let sessionId = null;
 
-    const loadingMessage = document.createElement("div");
-    loadingMessage.className = "bot-message fade-in";
-    loadingMessage.innerText = "Bot is loading...";
-    chatContent.appendChild(loadingMessage);
-    chatContent.scrollTop = chatContent.scrollHeight;
+// Trigger backend when chat widget opens
+async function initializeChat() {
+    const chatWindow = document.getElementById("chatWindow");
+    chatWindow.style.display = "block";
+
+    const chatContent = document.getElementById("chatContent");
+    const typingIndicator = document.createElement("div");
+    typingIndicator.className = "typing-indicator";
+    typingIndicator.innerText = "Bot is typing...";
+    chatContent.appendChild(typingIndicator);
 
     try {
-        const response = await fetch(BACKEND_CHAT_URL, {
+        const response = await fetch("http://34.41.145.80:8000/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session_id: localStorage.getItem("session_id") || null }),
+            body: JSON.stringify({ message: "", session_id: sessionId }),
         });
 
-        chatContent.removeChild(loadingMessage);
+        chatContent.removeChild(typingIndicator);
 
         if (response.ok) {
             const data = await response.json();
+            sessionId = data.session_id; // Save the session ID
             if (data.redirect_to === "/collect_user_data") {
-                displayForm(); // Call function to display the form
+                showUserDataForm();
             } else if (data.message) {
                 addMessageToChat(data.message, "bot-message");
             }
         } else {
-            addMessageToChat("Error fetching bot message. Please try again.", "bot-message");
+            addMessageToChat("Error initializing chat. Please try again.", "bot-message");
         }
     } catch (error) {
-        chatContent.removeChild(loadingMessage);
+        chatContent.removeChild(typingIndicator);
         addMessageToChat("Network error. Please check your connection.", "bot-message");
-        console.error("Fetch error:", error);
+        console.error("Initialization error:", error);
     }
 }
 
-// Display Form
-function displayForm() {
+// Display user data form
+function showUserDataForm() {
     const chatContent = document.getElementById("chatContent");
+    const formContainer = document.createElement("div");
+    formContainer.innerHTML = `
+        <form id="userDataForm">
+            <label for="name">Name:</label>
+            <input type="text" id="name" name="name" required />
+            <label for="email">Email:</label>
+            <input type="email" id="email" name="email" required />
+            <label for="phone">Phone:</label>
+            <input type="text" id="phone" name="phone" required />
+            <label for="organization">Organization:</label>
+            <input type="text" id="organization" name="organization" required />
+            <button type="submit">Submit</button>
+        </form>
+    `;
+    chatContent.appendChild(formContainer);
 
-    const formHtml = `
-        <div class="bot-message fade-in">
-            <form id="userForm">
-                <label>Name: <input type="text" id="name" required></label><br>
-                <label>Email: <input type="email" id="email" required></label><br>
-                <label>Phone: <input type="text" id="phone" required></label><br>
-                <label>Organization: <input type="text" id="organization" required></label><br>
-                <button type="button" onclick="submitForm()">Submit</button>
-            </form>
-        </div>`;
-    chatContent.innerHTML += formHtml;
-    chatContent.scrollTop = chatContent.scrollHeight;
+    const form = document.getElementById("userDataForm");
+    form.addEventListener("submit", handleUserDataSubmit);
 }
 
-// Submit Form Data
-async function submitForm() {
-    const name = document.getElementById("name").value;
-    const email = document.getElementById("email").value;
-    const phone = document.getElementById("phone").value;
-    const organization = document.getElementById("organization").value;
+// Handle user data submission
+async function handleUserDataSubmit(event) {
+    event.preventDefault();
+    const form = event.target;
+    const formData = {
+        name: form.name.value,
+        email: form.email.value,
+        phone: form.phone.value,
+        organization: form.organization.value,
+        session_id: sessionId, // Include session ID in the payload
+    };
 
-    if (name && email && phone && organization) {
-        try {
-            const response = await fetch(BACKEND_FORM_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    session_id: localStorage.getItem("session_id") || null,
-                    name,
-                    email,
-                    phone,
-                    organization,
-                }),
-            });
+    try {
+        const response = await fetch("http://34.41.145.80:8000/collect_user_data", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(formData),
+        });
 
-            if (response.ok) {
-                const data = await response.json();
-                addMessageToChat(data.message || "Details collected successfully!", "bot-message");
-            } else {
-                addMessageToChat("Error submitting your details. Please try again.", "bot-message");
-            }
-        } catch (error) {
-            addMessageToChat("Network error while submitting your details.", "bot-message");
-            console.error("Fetch error:", error);
+        if (response.ok) {
+            const data = await response.json();
+            addMessageToChat(data.message, "bot-message");
+            form.remove(); // Remove the form after successful submission
+        } else {
+            const errorData = await response.json();
+            addMessageToChat(errorData.message || "Error submitting your details.", "bot-message");
         }
-    } else {
-        addMessageToChat("Please fill out all fields before submitting.", "bot-message");
+    } catch (error) {
+        addMessageToChat("Network error. Please try again.", "bot-message");
+        console.error("Submission error:", error);
     }
 }
 
-// Add Message to Chat
+// Add message to chat
 function addMessageToChat(message, className) {
     const chatContent = document.getElementById("chatContent");
     const messageElement = document.createElement("div");
@@ -117,6 +124,9 @@ function addMessageToChat(message, className) {
     chatContent.appendChild(messageElement);
     chatContent.scrollTop = chatContent.scrollHeight;
 }
+
+// Initialize chat widget when it opens
+document.getElementById("chatToggleButton").addEventListener("click", initializeChat);
 
 
 // Handle Enter Key
