@@ -986,7 +986,7 @@ async def chat_endpoint(request: Request):
 SMTP_SERVER = "smtp.gmail.com"  # Replace with your SMTP server
 SMTP_PORT = 587  # Standard port for TLS
 SMTP_USERNAME = "urban.ease4all@gmail.com"  # Replace with your email
-SMTP_PASSWORD = "your-email-password"  # Replace with your email password
+SMTP_PASSWORD = "evzt sfbi itnx xrxa"  # Replace with your email password
 
 async def send_user_data_email(user_data: dict):
     """Send user data to the specified email address."""
