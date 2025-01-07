@@ -30,7 +30,9 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import Summary, Counter, start_http_server, generate_latest, CONTENT_TYPE_LATEST
 from logging.handlers import RotatingFileHandler
-
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 
 SESSION_TIMEOUT = timedelta(hours=1)
@@ -981,7 +983,45 @@ async def chat_endpoint(request: Request):
         REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
 
 
-# Updated /collect_user_data endpoint
+SMTP_SERVER = "smtp.gmail.com"  # Replace with your SMTP server
+SMTP_PORT = 587  # Standard port for TLS
+SMTP_USERNAME = "urban.ease4all@gmail.com"  # Replace with your email
+SMTP_PASSWORD = "your-email-password"  # Replace with your email password
+
+async def send_user_data_email(user_data: dict):
+    """Send user data to the specified email address."""
+    try:
+        # Create the email content
+        subject = "User Data Collected"
+        recipient = "vishal.singh@recircle.in"
+        sender = SMTP_USERNAME
+        body = f"""
+        User Data Collected:
+        Name: {user_data['name']}
+        Email: {user_data['email']}
+        Phone: {user_data['phone']}
+        Organization: {user_data['organization']}
+        """
+        
+        # Construct the email
+        msg = MIMEMultipart()
+        msg['From'] = sender
+        msg['To'] = recipient
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+
+        # Send the email
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()  # Secure the connection
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.sendmail(sender, recipient, msg.as_string())
+        
+        logger.info("User data email sent successfully.")
+    except Exception as e:
+        logger.error(f"Failed to send user data email: {e}")
+        raise
+
+
 @app.post("/collect_user_data")
 async def collect_user_data(request: Request):
     try:
@@ -1017,17 +1057,25 @@ async def collect_user_data(request: Request):
         session_key = f"session:{session_id}"
         session_data = await asyncio.to_thread(redis_client.hgetall, session_key)
 
-        session_data["user_data"] = json.dumps(
-            {"name": name, "email": email, "phone": phone, "organization": organization}
-        )
+        user_data = {
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "organization": organization,
+        }
+        session_data["user_data"] = json.dumps(user_data)
         session_data["user_data_collected"] = "true"
         await asyncio.to_thread(redis_client.hmset, session_key, session_data)
 
         logger.info(f"User data collected for session {session_id}: {session_data['user_data']}")
+
+        # Send the user data via email
+        await send_user_data_email(user_data)
 
         # Acknowledge data collection
         return JSONResponse(content={"message": "User data collected successfully. You can now ask your question."})
 
     except Exception as e:
         logger.exception("Error in collect_user_data endpoint.")
+        return JSONResponse(content={"message": "An error occurred while collecting user data."}, status_code=500)
         return JSONResponse(content={"message": "An error occurred while collecting user data."}, status_code=500)
