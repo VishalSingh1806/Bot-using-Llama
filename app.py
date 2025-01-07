@@ -35,7 +35,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 
-SESSION_TIMEOUT = timedelta(hours=1)
+SESSION_TIMEOUT = timedelta(minutes=1)
 
 # Load spaCy model globally during startup
 nlp = spacy_load("en_core_web_sm")
