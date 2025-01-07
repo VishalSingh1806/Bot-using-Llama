@@ -273,24 +273,49 @@ class SQLiteConnectionPool:
 
         # Pre-populate the pool
         for _ in range(pool_size):
-            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn = self._create_connection()
             self.pool.put(conn)
+
+    def _create_connection(self) -> Connection:
+        """Create a new SQLite connection."""
+        try:
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            logger.info("New SQLite connection created.")
+            return conn
+        except sqlite3.Error as e:
+            logger.error(f"Failed to create a SQLite connection: {e}")
+            raise
 
     def get_connection(self) -> Connection:
         """Get a connection from the pool."""
         with self.lock:
             if not self.pool.empty():
-                return self.pool.get()
-            # If the pool is empty, create a new connection
-            return sqlite3.connect(self.db_path, check_same_thread=False)
+                conn = self.pool.get()
+                # Validate the connection before returning
+                try:
+                    conn.execute("SELECT 1")
+                    return conn
+                except sqlite3.Error:
+                    logger.warning("Connection invalid; creating a new one.")
+                    return self._create_connection()
+            else:
+                # Create a new connection if the pool is empty
+                return self._create_connection()
 
     def release_connection(self, conn: Connection):
         """Release a connection back to the pool."""
         with self.lock:
-            if not self.pool.full():
-                self.pool.put(conn)
-            else:
-                conn.close()  # Close the connection if the pool is full
+            try:
+                # Validate connection before putting it back in the pool
+                conn.execute("SELECT 1")
+                if not self.pool.full():
+                    self.pool.put(conn)
+                else:
+                    conn.close()  # Close the connection if the pool is full
+                    logger.info("Connection closed as the pool is full.")
+            except sqlite3.Error:
+                logger.warning("Invalid connection; discarding instead of releasing.")
+                conn.close()
 
     def close_all_connections(self):
         """Close all connections in the pool."""
@@ -298,6 +323,7 @@ class SQLiteConnectionPool:
             while not self.pool.empty():
                 conn = self.pool.get()
                 conn.close()
+            logger.info("All SQLite connections closed.")
 
 
 # Initialize the SQLite connection pool
@@ -308,7 +334,9 @@ DB_POOL = SQLiteConnectionPool(DB_PATH)
 def connect_db() -> Connection:
     """Fetch a connection from the pool."""
     try:
-        return DB_POOL.get_connection()
+        conn = DB_POOL.get_connection()
+        logger.debug("Database connection acquired.")
+        return conn
     except Exception as e:
         logger.error(f"Failed to get database connection: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed.")
@@ -317,8 +345,10 @@ def release_db_connection(conn: Connection):
     """Release the connection back to the pool."""
     try:
         DB_POOL.release_connection(conn)
+        logger.debug("Database connection released.")
     except Exception as e:
         logger.warning(f"Failed to release database connection: {e}")
+
 
 
 async def compute_embedding(text: str):
@@ -437,6 +467,7 @@ def save_keywords_to_file():
 
 async def query_validated_qa(user_embedding, question: str):
     """Query the ValidatedQA table for the best match."""
+    conn = None
     try:
         conn = connect_db()
         cursor = conn.cursor()
@@ -460,7 +491,7 @@ async def query_validated_qa(user_embedding, question: str):
         query_duration = time.time() - start_time
         logger.info(f"Database query completed in {query_duration:.2f} seconds")
 
-        release_db_connection(conn)  # Return the connection to the pool
+        #release_db_connection(conn)  # Return the connection to the pool
 
         if best_match:
             logger.debug(f"Database match found with similarity {max_similarity:.2f}")
