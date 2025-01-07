@@ -33,7 +33,7 @@ from logging.handlers import RotatingFileHandler
 
 
 
-SESSION_TIMEOUT = timedelta(minutes=1)
+SESSION_TIMEOUT = timedelta(hours=1)
 
 # Load spaCy model globally during startup
 nlp = spacy_load("en_core_web_sm")
