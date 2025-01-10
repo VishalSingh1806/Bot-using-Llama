@@ -6,7 +6,6 @@ import time
 import logging
 import sqlite3  
 from sqlite3 import Connection
-from google.cloud import secretmanager
 from datetime import datetime, timedelta
 from functools import lru_cache
 from collections import defaultdict
@@ -209,31 +208,7 @@ DB_PATH = os.path.join(CURRENT_DIR, "knowledge_base.db")
 app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
 
 # Hugging Face token
-
-def get_secret(secret_name):
-    """Retrieve secret value from GCP Secret Manager."""
-    client = secretmanager.SecretManagerServiceClient()
-    project_id = os.getenv("GCP_PROJECT_ID")  # Dynamically retrieve project ID
-    if not project_id:
-        raise ValueError("GCP_PROJECT_ID environment variable is not set.")
-    
-    # Construct the full secret path
-    name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
-    
-    # Retrieve the secret value
-    response = client.access_secret_version(request={"name": name})
-    return response.payload.data.decode("UTF-8")
-
-# Retrieve secrets
-hf_token = get_secret("hf_token")
-smtp_username = get_secret("smtp_username")
-smtp_password = get_secret("smtp_password")
-
-# Use the secrets in your application
-print(f"HF Token: {hf_token[:4]}... (hidden for security)")
-print(f"SMTP Username: {smtp_username}")
-print(f"SMTP Password: {smtp_password[:2]}... (hidden for security)")
-
+hf_token = "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"
 
 # Serve `index.html` for root route
 @app.get("/")
@@ -1010,6 +985,8 @@ async def chat_endpoint(request: Request):
 
 SMTP_SERVER = "smtp.gmail.com"  # Replace with your SMTP server
 SMTP_PORT = 587  # Standard port for TLS
+SMTP_USERNAME = "urban.ease4all@gmail.com"  # Replace with your email
+SMTP_PASSWORD = "evzt sfbi itnx xrxa"  # Replace with your email password
 
 async def send_user_data_email(user_data: dict):
     """Send user data to the specified email address."""
