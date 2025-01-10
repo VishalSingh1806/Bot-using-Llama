@@ -1016,7 +1016,7 @@ async def send_user_data_email(user_data: dict):
         # Create the email content
         subject = "User Data Collected"
         recipient = "vishal.singh@recircle.in"
-        sender = SMTP_USERNAME
+        sender = smtp_username
         body = f"""
         User Data Collected:
         Name: {user_data['name']}
@@ -1035,7 +1035,7 @@ async def send_user_data_email(user_data: dict):
         # Send the email
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()  # Secure the connection
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.login(smtp_username, smtp_password)
             server.sendmail(sender, recipient, msg.as_string())
         
         logger.info("User data email sent successfully.")
