@@ -62,7 +62,7 @@ CACHE_THRESHOLD = 0.9  # Minimum similarity for cache retrieval
 # Cache for dynamic query embeddings
 embedding_cache = {}
 
-batch_size = 10
+batch_size = 5
 email_batch: List[dict] = []
 
 # Define clean_expired_sessions before using it in the scheduler
