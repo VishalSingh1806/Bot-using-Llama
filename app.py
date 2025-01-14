@@ -996,15 +996,17 @@ async def send_user_data_email(user_data: dict):
     """Send user data to the specified email address."""
     try:
         msg = construct_email(user_data)
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
             server.starttls()
             server.login(smtp_username, smtp_password)
             server.sendmail(msg['From'], msg['To'], msg.as_string())
         logger.info("User data email sent successfully.")
+    except smtplib.SMTPServerDisconnected as e:
+        logger.error("SMTP server disconnected unexpectedly.")
+        raise
     except Exception as e:
         logger.error(f"Failed to send user data email: {e}")
         raise
-
 
 def construct_email(user_data: dict):
     """Construct an email with the provided user data."""
