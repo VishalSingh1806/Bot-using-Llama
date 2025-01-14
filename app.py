@@ -109,27 +109,7 @@ except redis.ConnectionError as e:
     logger.error("Failed to connect to Redis.")
     raise RuntimeError("Redis connection failed.") from e
 
-# Global session memory
 
-
-# Predefined openings
-OPENINGS = {
-    "default": [
-        "Here's what I found:",
-        "Let me explain:",
-        "Absolutely! Here's the answer:",
-        "Sure! Here's the information you need:",
-    ],
-    "fact": [
-        "Did you know that...",
-        "Here's an interesting fact:",
-        "Let me share this with you:",
-    ],
-    "time": [
-        "Oh, this is interesting! It happened in...",
-        "Here's the timeline:",
-    ],
-}
 
 # Fallback Knowledge Base for General Queries
 FALLBACK_KB = {
