@@ -3,6 +3,8 @@ import re
 import json
 import time
 import logging
+import psycopg2
+from psycopg2 import pool
 import sqlite3  
 from sqlite3 import Connection
 from google.cloud import secretmanager
@@ -276,101 +278,81 @@ def preprocess_query(query, session_id):
 
     return query
 
-class SQLiteConnectionPool:
-    """Connection Pool to manage SQLite connections efficiently."""
-    def __init__(self, db_path: str, pool_size: int = 5):
-        self.db_path = db_path
-        self.pool = Queue(maxsize=pool_size)
-        self.lock = Lock()
+class PostgreSQLConnectionPool:
+    """Connection Pool to manage PostgreSQL connections."""
+    def __init__(self, db_config: dict, pool_size: int = 10):
+        self.db_config = db_config
+        self.pool = pool.SimpleConnectionPool(
+            minconn=1,
+            maxconn=pool_size,
+            dbname=db_config["dbname"],
+            user=db_config["user"],
+            password=db_config["password"],
+            host=db_config["host"],
+            port=db_config["port"],
+        )
+        logger.info("PostgreSQL connection pool initialized.")
 
-        # Pre-populate the pool
-        for _ in range(pool_size):
-            conn = self._create_connection()
-            self.pool.put(conn)
-
-    def _create_connection(self) -> Connection:
-        """Create a new SQLite connection."""
+    def get_connection(self):
+        """Fetch a connection from the pool."""
         try:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            logger.info("New SQLite connection created.")
+            conn = self.pool.getconn()
+            logger.debug("PostgreSQL connection acquired.")
             return conn
-        except sqlite3.Error as e:
-            logger.error(f"Failed to create a SQLite connection: {e}")
+        except Exception as e:
+            logger.error(f"Failed to acquire PostgreSQL connection: {e}")
             raise
 
-    def get_connection(self) -> Connection:
-        """Get a connection from the pool."""
-        with self.lock:
-            if not self.pool.empty():
-                conn = self.pool.get()
-                # Validate the connection before returning
-                try:
-                    conn.execute("SELECT 1")
-                    return conn
-                except sqlite3.Error:
-                    logger.warning("Connection invalid; creating a new one.")
-                    return self._create_connection()
-            else:
-                # Create a new connection if the pool is empty
-                return self._create_connection()
-
-    def release_connection(self, conn: Connection):
-        """Release a connection back to the pool."""
-        with self.lock:
-            try:
-                # Validate connection before putting it back in the pool
-                conn.execute("SELECT 1")
-                if not self.pool.full():
-                    self.pool.put(conn)
-                else:
-                    conn.close()  # Close the connection if the pool is full
-                    logger.info("Connection closed as the pool is full.")
-            except sqlite3.Error:
-                logger.warning("Invalid connection; discarding instead of releasing.")
-                conn.close()
+    def release_connection(self, conn):
+        """Release the connection back to the pool."""
+        try:
+            self.pool.putconn(conn)
+            logger.debug("PostgreSQL connection released back to pool.")
+        except Exception as e:
+            logger.warning(f"Failed to release PostgreSQL connection: {e}")
 
     def close_all_connections(self):
         """Close all connections in the pool."""
-        with self.lock:
-            while not self.pool.empty():
-                conn = self.pool.get()
-                conn.close()
-            logger.info("All SQLite connections closed.")
+        try:
+            self.pool.closeall()
+            logger.info("All PostgreSQL connections closed.")
+        except Exception as e:
+            logger.error(f"Error closing PostgreSQL connections: {e}")
 
 
-# Initialize the SQLite connection pool
-DB_POOL = SQLiteConnectionPool(DB_PATH)
+
+POSTGRES_CONFIG = {
+    "dbname": "epr_database",  # Replace with your actual database name
+    "user": "postgres",  # Replace with your PostgreSQL username
+    "password": "Tech123",  # Replace with your PostgreSQL password
+    "host": "34.100.134.186",  # Replace with your PostgreSQL host
+    "port": "5432",  # Replace with your PostgreSQL port
+}
+
+# Initialize the PostgreSQL connection pool
+DB_POOL = PostgreSQLConnectionPool(POSTGRES_CONFIG)
 
 
-# Utility functions
-def connect_db() -> Connection:
-    """Fetch a connection from the pool."""
+def connect_db():
+    """Fetch a connection from the PostgreSQL pool."""
     try:
         conn = DB_POOL.get_connection()
         logger.debug("Database connection acquired.")
-
-        # Optional: Check and log the database type
-        cursor = conn.cursor()
-        try:
-            cursor.execute("SELECT version();")  # PostgreSQL
-            logger.info("Connected to PostgreSQL.")
-        except Exception:
-            cursor.execute("SELECT sqlite_version();")  # SQLite
-            logger.info("Connected to SQLite.")
-
         return conn
     except Exception as e:
         logger.error(f"Failed to get database connection: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed.")
 
 
-def release_db_connection(conn: Connection):
-    """Release the connection back to the pool."""
+def release_db_connection(conn):
+    """Release the connection back to the PostgreSQL pool."""
     try:
         DB_POOL.release_connection(conn)
         logger.debug("Database connection released.")
     except Exception as e:
         logger.warning(f"Failed to release database connection: {e}")
+
+
 
 
 
