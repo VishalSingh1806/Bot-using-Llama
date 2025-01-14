@@ -845,7 +845,7 @@ async def chat_endpoint(request: Request):
                 "user_data_collected": "false",  # Flag for user data collection
                 "user_name": "",  # Placeholder for user name
             }
-            await asyncio.to_thread(redis_client.hset, session_key, session_data)
+            await asyncio.to_thread(redis_client.hmset, session_key, session_data)
             logger.info(f"New session initialized: {session_id}")
             return JSONResponse(
                 content={
@@ -857,7 +857,7 @@ async def chat_endpoint(request: Request):
             )
 
         # Check if user data is collected
-        if session_data.get("user_data_collected", "false").lower() != "true":
+        if session_data.get("user_data_collected", "false") == "false":
             logger.info(f"Session {session_id}: User data not collected. Prompting for user data collection.")
             return JSONResponse(
                 content={
@@ -900,12 +900,8 @@ async def chat_endpoint(request: Request):
         session_data["last_interaction"] = datetime.utcnow().isoformat()
 
         # Save session data to Redis
-        try:
-            await asyncio.to_thread(redis_client.hset, session_key, mapping=session_data)
-            logger.info(f"Session {session_id} updated in Redis: {session_data}")
-            await asyncio.to_thread(redis_client.expire, session_key, int(SESSION_TIMEOUT.total_seconds()))
-        except Exception as e:
-            logger.error(f"Failed to update session data in Redis for session {session_id}: {e}")
+        await asyncio.to_thread(redis_client.hmset, session_key, session_data)
+        await asyncio.to_thread(redis_client.expire, session_key, int(SESSION_TIMEOUT.total_seconds()))
 
         # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
