@@ -6,6 +6,8 @@ import logging
 import sqlite3  
 from sqlite3 import Connection
 from google.cloud import secretmanager
+import phonenumbers
+from email_validator import validate_email, EmailNotValidError
 from datetime import datetime, timedelta
 from functools import lru_cache
 from collections import defaultdict
@@ -993,41 +995,38 @@ SMTP_PORT = 587  # Standard port for TLS
 async def send_user_data_email(user_data: dict):
     """Send user data to the specified email address."""
     try:
-        # Create the email content
-        subject = "User Data Collected"
-        recipient = "vishal.singh@recircle.in"
-        sender = smtp_username
-        body = f"""
-        User Data Collected:
-        Name: {user_data['name']}
-        Email: {user_data['email']}
-        Phone: {user_data['phone']}
-        Organization: {user_data['organization']}
-        """
-        
-        # Construct the email
-        msg = MIMEMultipart()
-        msg['From'] = sender
-        msg['To'] = recipient
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
-
-        # Send the email
+        msg = construct_email(user_data)
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()  # Secure the connection
+            server.starttls()
             server.login(smtp_username, smtp_password)
-            server.sendmail(sender, recipient, msg.as_string())
-        
+            server.sendmail(msg['From'], msg['To'], msg.as_string())
         logger.info("User data email sent successfully.")
     except Exception as e:
         logger.error(f"Failed to send user data email: {e}")
         raise
 
 
+def construct_email(user_data: dict):
+    """Construct an email with the provided user data."""
+    subject = "User Data Collected"
+    body = f"""
+    User Data Collected:
+    Name: {user_data['name']}
+    Email: {user_data['email']}
+    Phone: {user_data['phone']}
+    Organization: {user_data['organization']}
+    """
+    msg = MIMEMultipart()
+    msg['From'] = smtp_username
+    msg['To'] = "vishal.singh@recircle.in"
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+    return msg
+
+
 @app.post("/collect_user_data")
 async def collect_user_data(request: Request):
     try:
-        # Parse form data
         data = await request.json()
         session_id = data.get("session_id")
         name = data.get("name")
@@ -1039,7 +1038,6 @@ async def collect_user_data(request: Request):
             logger.error("Missing session ID in user data submission.")
             return JSONResponse(content={"message": "Session ID is required."}, status_code=400)
 
-        # Validate required fields
         if not all([name, email, phone, organization]):
             logger.warning("Incomplete user data received.")
             return JSONResponse(
@@ -1047,37 +1045,31 @@ async def collect_user_data(request: Request):
                 status_code=400,
             )
 
-        # Perform optional validation (e.g., email and phone format)
-        if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+        try:
+            validate_email(email)
+        except EmailNotValidError:
             logger.warning("Invalid email format.")
             return JSONResponse(content={"message": "Invalid email format."}, status_code=400)
-        if not re.match(r"^\+?\d{7,15}$", phone):
+
+        try:
+            parsed_phone = phonenumbers.parse(phone)
+            if not phonenumbers.is_valid_number(parsed_phone):
+                raise ValueError("Invalid phone number")
+        except Exception:
             logger.warning("Invalid phone number format.")
             return JSONResponse(content={"message": "Invalid phone number format."}, status_code=400)
 
-        # Save user data to Redis
         session_key = f"session:{session_id}"
-        session_data = await asyncio.to_thread(redis_client.hgetall, session_key)
-
-        user_data = {
-            "name": name,
-            "email": email,
-            "phone": phone,
-            "organization": organization,
-        }
+        session_data = await asyncio.to_thread(redis_client.hgetall, session_key) or {}
+        user_data = {"name": name, "email": email, "phone": phone, "organization": organization}
         session_data["user_data"] = json.dumps(user_data)
         session_data["user_data_collected"] = "true"
         await asyncio.to_thread(redis_client.hmset, session_key, session_data)
 
-        logger.info(f"User data collected for session {session_id}: {session_data['user_data']}")
-
-        # Send the user data via email
+        logger.info(f"User data collected for session {session_id}.", extra={"user_data": user_data})
         await send_user_data_email(user_data)
 
-        # Acknowledge data collection
         return JSONResponse(content={"message": "User data collected successfully. You can now ask your question."})
-
     except Exception as e:
         logger.exception("Error in collect_user_data endpoint.")
-        return JSONResponse(content={"message": "An error occurred while collecting user data."}, status_code=500)
         return JSONResponse(content={"message": "An error occurred while collecting user data."}, status_code=500)
