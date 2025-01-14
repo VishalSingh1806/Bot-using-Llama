@@ -713,29 +713,38 @@ async def health_check():
     return {"status": "ok"}
 
 def test_db_connection():
-    """Test the database connection and ensure tables exist."""
+    """Test the PostgreSQL database connection and ensure tables exist."""
     try:
         conn = connect_db()
         cursor = conn.cursor()
 
         # Check the existence of tables
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        cursor.execute("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public';
+        """)
         tables = cursor.fetchall()
-        logger.info(f"Tables in the database: {tables}")
+        logger.info(f"Tables in the PostgreSQL database: {tables}")
 
         # Check `ValidatedQA` table structure
         if ("ValidatedQA",) in tables:
-            cursor.execute("PRAGMA table_info(ValidatedQA);")
+            cursor.execute("""
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name = 'ValidatedQA';
+            """)
             columns = cursor.fetchall()
             logger.info(f"Columns in ValidatedQA table: {columns}")
         else:
-            logger.warning("ValidatedQA table not found in the database.")
+            logger.warning("ValidatedQA table not found in the PostgreSQL database.")
 
         release_db_connection(conn)
-    except sqlite3.Error as e:
-        logger.error(f"Database connection test failed: {e}")
+    except psycopg2.Error as e:
+        logger.error(f"PostgreSQL connection test failed: {e}")
     except Exception as ex:
-        logger.exception(f"Unexpected error during database connection test: {ex}")
+        logger.exception(f"Unexpected error during PostgreSQL connection test: {ex}")
+
 
 @app.get("/metrics")
 async def metrics():
