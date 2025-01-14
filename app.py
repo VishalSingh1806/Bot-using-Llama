@@ -1093,13 +1093,20 @@ async def collect_user_data(request: Request):
                 status_code=400,
             )
 
-        # Add user data to batch and process if batch size is reached
-        await collect_and_send_user_data({
-            "name": name,
-            "email": email,
-            "phone": phone,
-            "organization": organization
-        })
+        # Save user data to Redis
+        await asyncio.to_thread(
+            redis_client.hset,
+            f"session:{session_id}",
+            mapping={
+                "user_data_collected": "true",
+                "user_name": name,
+                "email": email,
+                "phone": phone,
+                "organization": organization,
+                "last_interaction": datetime.utcnow().isoformat(),
+            },
+        )
+        logger.info(f"User data saved for session {session_id}.")
 
         return JSONResponse(content={"message": "User data collected successfully. You can now ask your question."})
 
