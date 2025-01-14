@@ -8,6 +8,10 @@ from sqlite3 import Connection
 from google.cloud import secretmanager
 import phonenumbers
 from email_validator import validate_email, EmailNotValidError
+from concurrent.futures import ThreadPoolExecutor
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 from functools import lru_cache
 from collections import defaultdict
@@ -57,6 +61,8 @@ CACHE_THRESHOLD = 0.9  # Minimum similarity for cache retrieval
 # Cache for dynamic query embeddings
 embedding_cache = {}
 
+batch_size = 10
+email_batch = []
 
 # Define clean_expired_sessions before using it in the scheduler
 def clean_expired_sessions():
@@ -1009,9 +1015,12 @@ async def send_user_data_email(user_data: dict):
         logger.error(f"Failed to send user data email: {e}")
         raise
 
-def construct_email(user_data: dict):
-    """Construct an email with the provided user data."""
-    subject = "User Data Collected"
+def construct_email(user_data):
+    """Construct an email."""
+    msg = MIMEMultipart()
+    msg['From'] = smtp_username
+    msg['To'] = "recipient@example.com"
+    msg['Subject'] = "User Data Collected"
     body = f"""
     User Data Collected:
     Name: {user_data['name']}
@@ -1019,17 +1028,25 @@ def construct_email(user_data: dict):
     Phone: {user_data['phone']}
     Organization: {user_data['organization']}
     """
-    msg = MIMEMultipart()
-    msg['From'] = smtp_username
-    msg['To'] = "vishal.singh@recircle.in"
-    msg['Subject'] = subject
     msg.attach(MIMEText(body, 'plain'))
     return msg
 
+def send_email(user_data):
+    """Send a single email."""
+    try:
+        msg = construct_email(user_data)
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
+            server.starttls()
+            server.login(smtp_username, smtp_password)
+            server.sendmail(msg['From'], msg['To'], msg.as_string())
+        logger.info(f"Email sent successfully for {user_data['name']}")
+    except Exception as e:
+        logger.error(f"Failed to send email for {user_data['name']}: {e}")
 
 @app.post("/collect_user_data")
 async def collect_user_data(request: Request):
     try:
+        # Parse form data
         data = await request.json()
         session_id = data.get("session_id")
         name = data.get("name")
@@ -1041,6 +1058,7 @@ async def collect_user_data(request: Request):
             logger.error("Missing session ID in user data submission.")
             return JSONResponse(content={"message": "Session ID is required."}, status_code=400)
 
+        # Validate required fields
         if not all([name, email, phone, organization]):
             logger.warning("Incomplete user data received.")
             return JSONResponse(
@@ -1048,32 +1066,16 @@ async def collect_user_data(request: Request):
                 status_code=400,
             )
 
-        try:
-            validate_email(email)
-        except EmailNotValidError:
-            logger.warning("Invalid email format.")
-            return JSONResponse(content={"message": "Invalid email format."}, status_code=400)
-
-        try:
-            # Specify the default region as 'IN' (India)
-            parsed_phone = phonenumbers.parse(phone, "IN")
-            if not phonenumbers.is_valid_number(parsed_phone):
-                raise ValueError("Invalid phone number")
-        except Exception:
-            logger.warning("Invalid phone number format.")
-            return JSONResponse(content={"message": "Invalid phone number format."}, status_code=400)
-
-        session_key = f"session:{session_id}"
-        session_data = await asyncio.to_thread(redis_client.hgetall, session_key) or {}
-        user_data = {"name": name, "email": email, "phone": phone, "organization": organization}
-        session_data["user_data"] = json.dumps(user_data)
-        session_data["user_data_collected"] = "true"
-        await asyncio.to_thread(redis_client.hmset, session_key, session_data)
-
-        logger.info(f"User data collected for session {session_id}.", extra={"user_data": user_data})
-        await send_user_data_email(user_data)
+        # Add user data to batch and process if batch size is reached
+        await collect_and_send_user_data({
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "organization": organization
+        })
 
         return JSONResponse(content={"message": "User data collected successfully. You can now ask your question."})
+
     except Exception as e:
         logger.exception("Error in collect_user_data endpoint.")
         return JSONResponse(content={"message": "An error occurred while collecting user data."}, status_code=500)
