@@ -996,6 +996,7 @@ async def send_user_data_email(user_data: dict):
     """Send user data to the specified email address."""
     try:
         msg = construct_email(user_data)
+        await asyncio.sleep(0.1)  # Add a small delay (e.g., 100ms) between emails
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
             server.starttls()
             server.login(smtp_username, smtp_password)
