@@ -999,7 +999,7 @@ SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 
 email_batch = []  # Initialize the global email batch list
-batch_size = 1    # Adjust batch size if needed
+batch_size = 10    # Adjust batch size if needed
 
 def construct_email(user_data):
     """Construct an email."""
