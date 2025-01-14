@@ -62,9 +62,6 @@ CACHE_THRESHOLD = 0.9  # Minimum similarity for cache retrieval
 # Cache for dynamic query embeddings
 embedding_cache = {}
 
-batch_size = 5
-email_batch: List[dict] = []
-
 # Define clean_expired_sessions before using it in the scheduler
 def clean_expired_sessions():
     """Clean expired sessions using Redis TTL."""
@@ -996,14 +993,17 @@ async def chat_endpoint(request: Request):
         REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
 
 
-SMTP_SERVER = "smtp.gmail.com"  # Replace with your SMTP server
-SMTP_PORT = 587  # Standard port for TLS
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+email_batch = []  # Initialize the global email batch list
+batch_size = 5    # Adjust batch size if needed
 
 def construct_email(user_data):
     """Construct an email."""
     msg = MIMEMultipart()
     msg['From'] = smtp_username
-    msg['To'] = "vishal.singh@recircle.in"  # Replace with the recipient's email address
+    msg['To'] = "vishal.singh@recircle.in"  # Replace with recipient's email address
     msg['Subject'] = "User Data Collected"
     body = f"""
     User Data Collected:
@@ -1026,6 +1026,7 @@ def send_email(user_data):
         logger.info(f"Email sent successfully for {user_data['name']}")
     except Exception as e:
         logger.error(f"Failed to send email for {user_data['name']}: {e}")
+        raise
 
 def send_email_batch(email_batch):
     """Send a batch of emails using a single SMTP connection."""
@@ -1033,7 +1034,6 @@ def send_email_batch(email_batch):
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
             server.starttls()
             server.login(smtp_username, smtp_password)
-
             for user_data in email_batch:
                 try:
                     msg = construct_email(user_data)
@@ -1041,22 +1041,12 @@ def send_email_batch(email_batch):
                     logger.info(f"Email sent successfully for {user_data['name']}")
                 except Exception as e:
                     logger.error(f"Failed to send email for {user_data['name']}: {e}")
+                    continue
     except smtplib.SMTPServerDisconnected as e:
         logger.error("SMTP server disconnected unexpectedly during batch.")
     except Exception as e:
         logger.error(f"Error during batch email sending: {e}")
-
-def retry_send_email(user_data, retries=3, delay=2):
-    """Retry sending an email in case of failure."""
-    for attempt in range(retries):
-        try:
-            send_email(user_data)
-            return  # Exit if successful
-        except Exception as e:
-            logger.warning(f"Retry {attempt + 1} for {user_data['name']} failed: {e}")
-            time.sleep(delay * (2 ** attempt))  # Exponential backoff
-    logger.error(f"Failed to send email for {user_data['name']} after {retries} retries.")
-
+        raise
 
 async def collect_and_send_user_data(user_data):
     """Collect user data and send in batches."""
@@ -1065,12 +1055,15 @@ async def collect_and_send_user_data(user_data):
     # Add user data to the batch
     email_batch.append(user_data)
 
+    # Log the current batch size for debugging
+    logger.info(f"Current batch size: {len(email_batch)}")
+
     # If batch size is reached, send the emails
     if len(email_batch) >= batch_size:
         try:
             logger.info(f"Sending batch of {len(email_batch)} emails.")
             send_email_batch(email_batch)
-            email_batch = []  # Clear batch after sending
+            email_batch.clear()  # Clear batch after sending
         except Exception as e:
             logger.error(f"Error sending email batch: {e}")
             raise
