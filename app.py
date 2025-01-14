@@ -1027,10 +1027,36 @@ def send_email(user_data):
     except Exception as e:
         logger.error(f"Failed to send email for {user_data['name']}: {e}")
 
-def send_email_batch(email_batch, max_threads=5):
-    """Send a batch of emails using multithreading."""
-    with ThreadPoolExecutor(max_threads) as executor:
-        executor.map(send_email, email_batch)
+def send_email_batch(email_batch):
+    """Send a batch of emails using a single SMTP connection."""
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
+            server.starttls()
+            server.login(smtp_username, smtp_password)
+
+            for user_data in email_batch:
+                try:
+                    msg = construct_email(user_data)
+                    server.sendmail(msg['From'], msg['To'], msg.as_string())
+                    logger.info(f"Email sent successfully for {user_data['name']}")
+                except Exception as e:
+                    logger.error(f"Failed to send email for {user_data['name']}: {e}")
+    except smtplib.SMTPServerDisconnected as e:
+        logger.error("SMTP server disconnected unexpectedly during batch.")
+    except Exception as e:
+        logger.error(f"Error during batch email sending: {e}")
+
+def retry_send_email(user_data, retries=3, delay=2):
+    """Retry sending an email in case of failure."""
+    for attempt in range(retries):
+        try:
+            send_email(user_data)
+            return  # Exit if successful
+        except Exception as e:
+            logger.warning(f"Retry {attempt + 1} for {user_data['name']} failed: {e}")
+            time.sleep(delay * (2 ** attempt))  # Exponential backoff
+    logger.error(f"Failed to send email for {user_data['name']} after {retries} retries.")
+
 
 async def collect_and_send_user_data(user_data):
     """Collect user data and send in batches."""
