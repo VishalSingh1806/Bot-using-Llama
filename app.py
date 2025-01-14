@@ -348,10 +348,21 @@ def connect_db() -> Connection:
     try:
         conn = DB_POOL.get_connection()
         logger.debug("Database connection acquired.")
+
+        # Optional: Check and log the database type
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT version();")  # PostgreSQL
+            logger.info("Connected to PostgreSQL.")
+        except Exception:
+            cursor.execute("SELECT sqlite_version();")  # SQLite
+            logger.info("Connected to SQLite.")
+
         return conn
     except Exception as e:
         logger.error(f"Failed to get database connection: {e}")
         raise HTTPException(status_code=500, detail="Database connection failed.")
+
 
 def release_db_connection(conn: Connection):
     """Release the connection back to the pool."""
