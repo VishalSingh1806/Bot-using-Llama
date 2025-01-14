@@ -999,7 +999,7 @@ SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 
 email_batch = []  # Initialize the global email batch list
-batch_size = 5    # Adjust batch size if needed
+batch_size = 1    # Adjust batch size if needed
 
 def construct_email(user_data):
     """Construct an email."""
@@ -1051,7 +1051,6 @@ def send_email_batch(email_batch):
         raise
 
 async def collect_and_send_user_data(user_data):
-    """Collect user data and send in batches."""
     global email_batch
 
     # Add user data to the batch
@@ -1064,11 +1063,12 @@ async def collect_and_send_user_data(user_data):
     if len(email_batch) >= batch_size:
         try:
             logger.info(f"Sending batch of {len(email_batch)} emails.")
-            send_email_batch(email_batch)
+            send_email_batch(email_batch)  # Ensure this function is working as expected
             email_batch.clear()  # Clear batch after sending
         except Exception as e:
             logger.error(f"Error sending email batch: {e}")
             raise
+
 
 @app.post("/collect_user_data")
 async def collect_user_data(request: Request):
@@ -1081,15 +1081,11 @@ async def collect_user_data(request: Request):
         phone = data.get("phone")
         organization = data.get("organization")
 
-        if not session_id:
-            logger.error("Missing session ID in user data submission.")
-            return JSONResponse(content={"message": "Session ID is required."}, status_code=400)
-
         # Validate required fields
-        if not all([name, email, phone, organization]):
+        if not all([session_id, name, email, phone, organization]):
             logger.warning("Incomplete user data received.")
             return JSONResponse(
-                content={"message": "Please provide all required fields: name, email, phone, and organization."},
+                content={"message": "Please provide all required fields."},
                 status_code=400,
             )
 
@@ -1108,8 +1104,19 @@ async def collect_user_data(request: Request):
         )
         logger.info(f"User data saved for session {session_id}.")
 
-        return JSONResponse(content={"message": "User data collected successfully. You can now ask your question."})
+        # Add user data to the email batch
+        await collect_and_send_user_data(
+            {"name": name, "email": email, "phone": phone, "organization": organization}
+        )
+
+        return JSONResponse(
+            content={"message": "User data collected successfully. You can now ask your question."},
+            status_code=200,
+        )
 
     except Exception as e:
         logger.exception("Error in collect_user_data endpoint.")
-        return JSONResponse(content={"message": "An error occurred while collecting user data."}, status_code=500)
+        return JSONResponse(
+            content={"message": "An error occurred while collecting user data."},
+            status_code=500,
+        )
