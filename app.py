@@ -1052,7 +1052,8 @@ async def collect_user_data(request: Request):
             return JSONResponse(content={"message": "Invalid email format."}, status_code=400)
 
         try:
-            parsed_phone = phonenumbers.parse(phone)
+            # Specify the default region as 'IN' (India)
+            parsed_phone = phonenumbers.parse(phone, "IN")
             if not phonenumbers.is_valid_number(parsed_phone):
                 raise ValueError("Invalid phone number")
         except Exception:
