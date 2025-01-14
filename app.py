@@ -471,7 +471,7 @@ def save_keywords_to_file():
 
 
 async def query_validated_qa(user_embedding, question: str):
-    """Query the ValidatedQA table for the best match."""
+    """Query the validatedqa table for the best match."""
     conn = None
     try:
         conn = connect_db()
@@ -480,7 +480,7 @@ async def query_validated_qa(user_embedding, question: str):
 
         # Fetch only required columns to minimize data transfer
         rows = await asyncio.to_thread(
-            lambda: cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA").fetchall()
+            lambda: cursor.execute("SELECT question, answer, question_embedding FROM validatedqa").fetchall()
         )
 
         max_similarity = 0.0
@@ -727,17 +727,17 @@ def test_db_connection():
         tables = cursor.fetchall()
         logger.info(f"Tables in the PostgreSQL database: {tables}")
 
-        # Check `ValidatedQA` table structure
-        if ("ValidatedQA",) in tables:
+        # Check `validatedqa` table structure
+        if ("validatedqa",) in tables:
             cursor.execute("""
                 SELECT column_name, data_type
                 FROM information_schema.columns
-                WHERE table_name = 'ValidatedQA';
+                WHERE table_name = 'validatedqa';
             """)
             columns = cursor.fetchall()
-            logger.info(f"Columns in ValidatedQA table: {columns}")
+            logger.info(f"Columns in validatedqa table: {columns}")
         else:
-            logger.warning("ValidatedQA table not found in the PostgreSQL database.")
+            logger.warning("validatedqa table not found in the PostgreSQL database.")
 
         release_db_connection(conn)
     except psycopg2.Error as e:
