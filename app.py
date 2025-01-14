@@ -8,6 +8,7 @@ from sqlite3 import Connection
 from google.cloud import secretmanager
 import phonenumbers
 from email_validator import validate_email, EmailNotValidError
+from typing import List
 from concurrent.futures import ThreadPoolExecutor
 import smtplib
 from email.mime.text import MIMEText
@@ -62,7 +63,7 @@ CACHE_THRESHOLD = 0.9  # Minimum similarity for cache retrieval
 embedding_cache = {}
 
 batch_size = 10
-email_batch = []
+email_batch: List[dict] = []
 
 # Define clean_expired_sessions before using it in the scheduler
 def clean_expired_sessions():
@@ -998,28 +999,11 @@ async def chat_endpoint(request: Request):
 SMTP_SERVER = "smtp.gmail.com"  # Replace with your SMTP server
 SMTP_PORT = 587  # Standard port for TLS
 
-async def send_user_data_email(user_data: dict):
-    """Send user data to the specified email address."""
-    try:
-        msg = construct_email(user_data)
-        await asyncio.sleep(0.1)  # Add a small delay (e.g., 100ms) between emails
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
-            server.starttls()
-            server.login(smtp_username, smtp_password)
-            server.sendmail(msg['From'], msg['To'], msg.as_string())
-        logger.info("User data email sent successfully.")
-    except smtplib.SMTPServerDisconnected as e:
-        logger.error("SMTP server disconnected unexpectedly.")
-        raise
-    except Exception as e:
-        logger.error(f"Failed to send user data email: {e}")
-        raise
-
 def construct_email(user_data):
     """Construct an email."""
     msg = MIMEMultipart()
     msg['From'] = smtp_username
-    msg['To'] = "recipient@example.com"
+    msg['To'] = "vishal.singh@recircle.in"  # Replace with the recipient's email address
     msg['Subject'] = "User Data Collected"
     body = f"""
     User Data Collected:
@@ -1042,6 +1026,28 @@ def send_email(user_data):
         logger.info(f"Email sent successfully for {user_data['name']}")
     except Exception as e:
         logger.error(f"Failed to send email for {user_data['name']}: {e}")
+
+def send_email_batch(email_batch, max_threads=5):
+    """Send a batch of emails using multithreading."""
+    with ThreadPoolExecutor(max_threads) as executor:
+        executor.map(send_email, email_batch)
+
+async def collect_and_send_user_data(user_data):
+    """Collect user data and send in batches."""
+    global email_batch
+
+    # Add user data to the batch
+    email_batch.append(user_data)
+
+    # If batch size is reached, send the emails
+    if len(email_batch) >= batch_size:
+        try:
+            logger.info(f"Sending batch of {len(email_batch)} emails.")
+            send_email_batch(email_batch)
+            email_batch = []  # Clear batch after sending
+        except Exception as e:
+            logger.error(f"Error sending email batch: {e}")
+            raise
 
 @app.post("/collect_user_data")
 async def collect_user_data(request: Request):
