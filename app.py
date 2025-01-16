@@ -482,13 +482,23 @@ async def query_validated_qa(user_embedding, question: str):
     conn = None
     try:
         conn = connect_db()
+        if conn is None:
+            logger.error("Database connection is None. Cannot proceed with query.")
+            return None, 0.0, None
+
         cursor = conn.cursor()
+        if cursor is None:
+            logger.error("Failed to create a cursor from the database connection.")
+            return None, 0.0, None
+
         start_time = time.time()
 
         # Fetch only required columns to minimize data transfer
-        rows = await asyncio.to_thread(
-            lambda: cursor.execute("SELECT question, answer, question_embedding FROM validatedqa").fetchall()
-        )
+        rows = await asyncio.to_thread(lambda: fetch_rows_postgresql(cursor))
+
+        if not rows:
+            logger.info("No rows returned from the database query.")
+            return None, 0.0, None
 
         max_similarity = 0.0
         best_match = None
@@ -503,27 +513,36 @@ async def query_validated_qa(user_embedding, question: str):
         query_duration = time.time() - start_time
         logger.info(f"Database query completed in {query_duration:.2f} seconds")
 
-        #release_db_connection(conn)  # Return the connection to the pool
-
         if best_match:
             logger.debug(f"Database match found with similarity {max_similarity:.2f}")
         else:
             logger.debug("No database match found for the query.")
 
         return best_match, max_similarity, "database"
-    except sqlite3.Error as e:
-        logger.error(f"Database query error: {e}")
+    except psycopg2.Error as e:
+        logger.error(f"PostgreSQL query error: {e}")
         return None, 0.0, None
     except Exception as ex:
         logger.exception(f"Unexpected error in query_validated_qa: {ex}")
         return None, 0.0, None
     finally:
         # Ensure connection release in case of unexpected errors
-        try:
-            release_db_connection(conn)
-        except UnboundLocalError:
-            pass  # Connection was not established
+        if conn:
+            try:
+                release_db_connection(conn)
+            except Exception as release_error:
+                logger.warning(f"Error releasing database connection: {release_error}")
 
+
+def fetch_rows_postgresql(cursor):
+    """Fetch rows from the validatedqa table."""
+    try:
+        cursor.execute("SELECT question, answer, question_embedding FROM validatedqa")
+        rows = cursor.fetchall()
+        return rows
+    except Exception as e:
+        logger.error(f"Error fetching rows: {e}")
+        return None
 
 
 def fuzzy_match_fallback(question: str) -> str:
