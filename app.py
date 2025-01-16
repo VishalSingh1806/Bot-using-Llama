@@ -39,9 +39,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import Summary, Counter, start_http_server, generate_latest, CONTENT_TYPE_LATEST
 from logging.handlers import RotatingFileHandler
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+
 
 
 SESSION_TIMEOUT = timedelta(hours=1)
@@ -215,12 +213,21 @@ def get_secret(secret_name):
 hf_token = get_secret("hf_token")
 smtp_username = get_secret("smtp_username")
 smtp_password = get_secret("smtp_password")
+# Retrieve database connection details from secrets
+db_name = get_secret("db_name")
+db_user = get_secret("db_user")
+db_password = get_secret("db_password")
+db_host = get_secret("db_host")
+db_port = get_secret("db_port")
 
 # Use the secrets in your application
 print(f"HF Token: {hf_token[:4]}... (hidden for security)")
 print(f"SMTP Username: {smtp_username}")
 print(f"SMTP Password: {smtp_password[:2]}... (hidden for security)")
-
+print(f"HF Token: {hf_token[:4]}... (hidden for security)")
+print(f"SMTP Username: {smtp_username}")
+print(f"SMTP Password: {smtp_password[:2]}... (hidden for security)")
+print(f"Database Host: {db_host}")
 
 # Serve `index.html` for root route
 @app.get("/")
@@ -322,11 +329,11 @@ class PostgreSQLConnectionPool:
 
 
 POSTGRES_CONFIG = {
-    "dbname": "epr_database",  # Replace with your actual database name
-    "user": "postgres",  # Replace with your PostgreSQL username
-    "password": "Tech123",  # Replace with your PostgreSQL password
-    "host": "34.100.134.186",  # Replace with your PostgreSQL host
-    "port": "5432",  # Replace with your PostgreSQL port
+    "dbname": db_name,
+    "user": db_user,
+    "password": db_password,
+    "host": db_host,
+    "port": db_port,
 }
 
 # Initialize the PostgreSQL connection pool
@@ -744,12 +751,6 @@ def test_db_connection():
         logger.error(f"PostgreSQL connection test failed: {e}")
     except Exception as ex:
         logger.exception(f"Unexpected error during PostgreSQL connection test: {ex}")
-
-
-@app.get("/metrics")
-async def metrics():
-    """Expose Prometheus metrics via FastAPI."""
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.get("/session/{session_id}")
 async def get_session_details(session_id: str):
