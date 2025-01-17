@@ -15,8 +15,8 @@ function toggleChat() {
 }
 
 // Define the backend URLs dynamically
-const BACKEND_CHAT_URL = "http://34.118.202.18:8000/chat";
-const BACKEND_FORM_URL = "http://34.118.202.18:8000/collect_user_data";
+const BACKEND_CHAT_URL = "http://34.55.88.223:8000/chat";
+const BACKEND_FORM_URL = "http://34.55.88.223:8000/collect_user_data";
 
 // Trigger Backend for Form
 async function triggerBackendForForm() {
