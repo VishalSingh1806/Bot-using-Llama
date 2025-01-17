@@ -5,8 +5,6 @@ import time
 import logging
 import psycopg2
 from psycopg2 import pool
-import sqlite3  
-from sqlite3 import Connection
 from google.cloud import secretmanager
 import phonenumbers
 from email_validator import validate_email, EmailNotValidError
