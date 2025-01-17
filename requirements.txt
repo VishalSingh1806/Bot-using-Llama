@@ -1,0 +1,18 @@
+psycopg2-binary
+sqlite3 # sqlite3 is built into Python, so you don't need to install it
+google-cloud-secret-manager
+phonenumbers
+email-validator
+numpy
+torch
+spacy
+scikit-learn
+sentence-transformers
+rapidfuzz
+accelerate
+transformers
+apscheduler
+redis
+fastapi
+uvicorn
+prometheus-client
