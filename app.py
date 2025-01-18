@@ -99,10 +99,67 @@ logging.basicConfig(
 )
 logger = logging.getLogger("EPR_Chatbot")
 
-# Redis configuration
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
-REDIS_DB = 0
+def get_secret(secret_name):
+    """Retrieve secret value from GCP Secret Manager."""
+    client = secretmanager.SecretManagerServiceClient()
+    project_id = os.getenv("GCP_PROJECT_ID")  # Dynamically retrieve project ID
+    if not project_id:
+        raise ValueError("GCP_PROJECT_ID environment variable is not set.")
+    
+    # Construct the full secret path
+    name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
+    
+    # Retrieve the secret value
+    response = client.access_secret_version(request={"name": name})
+    return response.payload.data.decode("UTF-8")
+
+
+def load_secrets(required_secrets):
+    """Fetch and validate all required secrets."""
+    secrets = {}
+    for secret_name in required_secrets:
+        try:
+            secrets[secret_name] = get_secret(secret_name)
+        except Exception as e:
+            logger.error(f"Failed to fetch secret: {secret_name}. Error: {e}")
+            raise RuntimeError(f"Critical secret missing: {secret_name}")
+    return secrets
+
+
+# Define required secrets
+REQUIRED_SECRETS = [
+    "REDIS_HOST", "REDIS_PORT", "REDIS_DB",
+    "hf_token", "smtp_username", "smtp_password",
+    "db_name", "db_user", "db_password", "db_host", "db_port"
+]
+
+# Load secrets
+secrets = load_secrets(REQUIRED_SECRETS)
+
+# Assign secrets to variables
+REDIS_HOST = secrets["REDIS_HOST"]
+REDIS_PORT = secrets["REDIS_PORT"]
+REDIS_DB = secrets["REDIS_DB"]
+hf_token = secrets["hf_token"]
+smtp_username = secrets["smtp_username"]
+smtp_password = secrets["smtp_password"]
+db_name = secrets["db_name"]
+db_user = secrets["db_user"]
+db_password = secrets["db_password"]
+db_host = secrets["db_host"]
+db_port = secrets["db_port"]
+
+# Use the secrets in your application
+print(f"HF Token fetched successfully")
+print(f"SMTP Username fetched successfully")
+print(f"SMTP Password fetched successfully")
+print(f"HF Token fetched successfully")
+print(f"SMTP Username fetched successfully")
+print(f"SMTP Password fetched successfully")
+print(f"Database Host fetched successfully")
+print(f"REDIS_HOST fetched successfully")
+print(f"REDIS_PORT fetched successfully")
+print(f"REDIS_DB fetched successfully")
 
 # Initialize Redis client
 try:
@@ -186,46 +243,9 @@ async def metrics():
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_FILES_DIR = os.path.join(CURRENT_DIR, "static")
 TEMPLATES_DIR = os.path.join(CURRENT_DIR, "templates")
-DB_PATH = os.path.join(CURRENT_DIR, "knowledge_base.db")
 
 # Mount static files
 app.mount("/static", StaticFiles(directory=STATIC_FILES_DIR), name="static")
-
-# Hugging Face token
-
-def get_secret(secret_name):
-    """Retrieve secret value from GCP Secret Manager."""
-    client = secretmanager.SecretManagerServiceClient()
-    project_id = os.getenv("GCP_PROJECT_ID")  # Dynamically retrieve project ID
-    if not project_id:
-        raise ValueError("GCP_PROJECT_ID environment variable is not set.")
-    
-    # Construct the full secret path
-    name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
-    
-    # Retrieve the secret value
-    response = client.access_secret_version(request={"name": name})
-    return response.payload.data.decode("UTF-8")
-
-# Retrieve secrets
-hf_token = get_secret("hf_token")
-smtp_username = get_secret("smtp_username")
-smtp_password = get_secret("smtp_password")
-# Retrieve database connection details from secrets
-db_name = get_secret("db_name")
-db_user = get_secret("db_user")
-db_password = get_secret("db_password")
-db_host = get_secret("db_host")
-db_port = get_secret("db_port")
-
-# Use the secrets in your application
-print(f"HF Token: {hf_token[:4]}... (hidden for security)")
-print(f"SMTP Username: {smtp_username}")
-print(f"SMTP Password: {smtp_password[:2]}... (hidden for security)")
-print(f"HF Token: {hf_token[:4]}... (hidden for security)")
-print(f"SMTP Username: {smtp_username}")
-print(f"SMTP Password: {smtp_password[:2]}... (hidden for security)")
-print(f"Database Host: {db_host}")
 
 # Serve `index.html` for root route
 @app.get("/")
