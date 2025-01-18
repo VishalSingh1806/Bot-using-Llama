@@ -201,7 +201,7 @@ async def lifespan(app: FastAPI):
             "What are EPR compliance rules?",
             "How do I register for EPR compliance?"
         ]
-        reference_embeddings = np.vstack([compute_embedding(q) for q in reference_queries])
+        reference_embeddings = np.vstack(await asyncio.gather(*(compute_embedding(q) for q in reference_queries)))
         logger.info("Static embeddings precomputed for reference queries.")
     except Exception as e:
         logger.error(f"Failed to precompute reference embeddings: {e}")
