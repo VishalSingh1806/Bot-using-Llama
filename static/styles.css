@@ -1,3 +1,4 @@
+
 body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     background-color: #000000; /* Light background for the body */
@@ -249,4 +250,25 @@ body {
     to {
         opacity: 1;
     }
+}
+
+/* Character Counter Styling */
+.char-counter {
+    text-align: left; /* Align to the left */
+    font-size: 12px;
+    margin-top: 2px; /* Subtle spacing from input field */
+    margin-left: 15px; /* Slight adjustment for alignment */
+    color: #555; /* Neutral color for the text */
+}
+
+/* Input Field Focus Style */
+#userMessage:focus {
+    border-color: #007bff; /* Highlight border on focus */
+    outline: none; /* Remove default outline */
+    box-shadow: 0 0 4px rgba(0, 123, 255, 0.5); /* Soft blue glow */
+}
+
+/* Input Field Exceeding Limit Style */
+#userMessage {
+    transition: border-color 0.1s ease; /* Smooth transition for border color changes */
 }
