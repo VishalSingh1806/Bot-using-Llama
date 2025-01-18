@@ -1,4 +1,3 @@
-
 // Toggle Chat Window
 function toggleChat() {
     const chatWindow = document.getElementById("chatWindow");
@@ -13,6 +12,50 @@ function toggleChat() {
         }
     }
 }
+
+const MAX_CHAR_LIMIT = 100; // Set maximum allowed characters
+
+// Initialize the character countdown
+document.addEventListener("DOMContentLoaded", function () {
+    const userMessageInput = document.getElementById("userMessage");
+    const sendButton = document.querySelector(".chat-footer button"); // Get the "Send" button
+
+    // Disable the send button initially
+    sendButton.disabled = true;
+    sendButton.style.cursor = "not-allowed"; // Change cursor to indicate disabled state
+
+    // Add a character counter dynamically
+    const counter = document.createElement("div");
+    counter.id = "charCounter";
+    counter.className = "char-counter"; // Apply styling through CSS
+    counter.textContent = `Max Characters ${MAX_CHAR_LIMIT}`;
+    userMessageInput.parentNode.insertAdjacentElement("afterend", counter);
+
+    // Add event listener for input changes
+    userMessageInput.addEventListener("input", function () {
+        const remaining = MAX_CHAR_LIMIT - this.value.length;
+
+        if (remaining > 0) {
+            counter.textContent = `Remaining input: ${remaining}`;
+            this.style.borderColor = ""; // Reset border color if valid
+            sendButton.disabled = this.value.trim().length === 0; // Enable button if input is valid
+            sendButton.style.cursor = sendButton.disabled ? "not-allowed" : "pointer";
+        } else {
+            counter.textContent = `Input limit exceeded`;
+            this.style.borderColor = "red"; // Highlight input field in red
+            sendButton.disabled = true; // Disable button when input exceeds limit
+            sendButton.style.cursor = "not-allowed";
+        }
+
+        // Disable further input when limit is reached
+        if (this.value.length >= MAX_CHAR_LIMIT) {
+            this.value = this.value.substring(0, MAX_CHAR_LIMIT); // Truncate excess input
+            counter.textContent = `Remaining input: 0`;
+        }
+    });
+});
+
+
 
 // Define the backend URLs dynamically
 const BACKEND_CHAT_URL = "http://34.132.31.71:8000/chat";
@@ -90,7 +133,6 @@ function displayForm() {
     chatContent.scrollTop = chatContent.scrollHeight;
 }
 
-
 // Submit Form Data
 async function submitForm() {
     const name = document.getElementById("name").value;
@@ -135,7 +177,6 @@ async function submitForm() {
         addMessageToChat("Please fill out all fields before submitting.", "bot-message");
     }
 }
-
 
 // Add Message to Chat
 function addMessageToChat(message, className) {
