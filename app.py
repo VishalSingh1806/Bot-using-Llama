@@ -150,16 +150,16 @@ db_host = secrets["db_host"]
 db_port = secrets["db_port"]
 
 # Use the secrets in your application
-print(f"HF Token fetched successfully")
-print(f"SMTP Username fetched successfully")
-print(f"SMTP Password fetched successfully")
-print(f"HF Token fetched successfully")
-print(f"SMTP Username fetched successfully")
-print(f"SMTP Password fetched successfully")
-print(f"Database Host fetched successfully")
-print(f"REDIS_HOST fetched successfully")
-print(f"REDIS_PORT fetched successfully")
-print(f"REDIS_DB fetched successfully")
+logger.info(f"HF Token fetched successfully")
+logger.info(f"SMTP Username fetched successfully")
+logger.info(f"SMTP Password fetched successfully")
+logger.info(f"HF Token fetched successfully")
+logger.info(f"SMTP Username fetched successfully")
+logger.info(f"SMTP Password fetched successfully")
+logger.info(f"Database Host fetched successfully")
+logger.info(f"REDIS_HOST fetched successfully")
+logger.info(f"REDIS_PORT fetched successfully")
+logger.info(f"REDIS_DB fetched successfully")
 
 # Initialize Redis client
 try:
@@ -315,6 +315,7 @@ class PostgreSQLConnectionPool:
             password=db_config["password"],
             host=db_config["host"],
             port=db_config["port"],
+            connect_timeout=10
         )
         logger.info("PostgreSQL connection pool initialized.")
 
