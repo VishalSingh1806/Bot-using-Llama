@@ -93,7 +93,7 @@ async function triggerBackendForForm() {
         }
     } catch (error) {
         chatContent.removeChild(loadingMessage);
-        addMessageToChat("Network error. Please check your connection.", "bot-message");
+        addMessageToChat("Oops! It seems there’s a connection issue. Please try again!", "bot-message");
         console.error("Fetch error:", error);
     }
 }
