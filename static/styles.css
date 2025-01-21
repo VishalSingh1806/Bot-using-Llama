@@ -12,7 +12,7 @@ body {
     z-index: 1000;
 }
 
-.chat-button {
+/* .chat-button {
     background-color: #007bff;
     color: white;
     font-size: 32px;
@@ -21,7 +21,7 @@ body {
     cursor: pointer;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
     transition: background-color 0.3s, transform 0.3s, box-shadow 0.3s;
-}
+} */
 
 .chat-button:hover {
     background-color: #0056b3; /* Darker blue on hover */
@@ -175,7 +175,7 @@ body {
 }
 
 /* Form Container Styling */
-.form-container {
+/* .form-container {
     background-color: #f4f4f4;
     border: 1px solid #ddd;
     border-radius: 8px;
@@ -183,7 +183,7 @@ body {
     max-width: 300px;
     margin: auto;
     font-family: Arial, sans-serif;
-}
+} */
 
 /* Form Heading */
 .form-container h3 {
@@ -208,13 +208,13 @@ body {
 }
 
 /* Form Inputs */
-.form-group input {
+/* .form-group input {
     padding: 8px;
     border: 1px solid #ccc;
     border-radius: 4px;
     font-size: 14px;
     width: 100%;
-}
+} */
 
 /* Form Actions */
 .form-actions {
@@ -222,7 +222,7 @@ body {
 }
 
 /* Submit Button */
-.submit-button {
+/* .submit-button {
     background-color: #007bff;
     color: white;
     padding: 10px 20px;
@@ -231,11 +231,8 @@ body {
     font-size: 14px;
     cursor: pointer;
     transition: background-color 0.3s ease;
-}
+} */
 
-.submit-button:hover {
-    background-color: #0056b3;
-}
 
 /* Bot Message Fade-in */
 .bot-message {
@@ -271,4 +268,133 @@ body {
 /* Input Field Exceeding Limit Style */
 #userMessage {
     transition: border-color 0.1s ease; /* Smooth transition for border color changes */
+}
+
+
+.chat-button {
+    position: fixed;
+    bottom: 20px; /* Corrected the typo from '15x' to '15px' */
+    right: 20px;
+    background-color: #007bff; /* Blue background color */
+    color: white;
+    padding: 0px;
+    border-radius: 20%; /* Makes the button circular */
+    width: 60px; /* Adjusted for a better size */
+    height: 60px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    transition: background-color 0.3s, transform 0.3s, box-shadow 0.3s;
+}
+
+.chat-logo {
+    width: 50px; /* Adjusted size to fit inside the button */
+    height: 50px;
+    object-fit: contain; /* Ensures the logo scales properly */
+}
+
+/* CSS for Form */
+
+/* Container Styling */
+.form-container {
+    background: #f9f9f9;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+    max-width: 400px;
+    margin: 20px auto;
+    font-family: 'Arial', sans-serif;
+}
+
+
+/* Heading and Description */
+#formHeading {
+    text-align: center;
+    color: #007bff;
+    margin-bottom: 10px;
+    font-size: 1.5em;
+}
+
+.form-description {
+    text-align: center;
+    font-size: 0.9em;
+    color: #555;
+    margin-bottom: 20px;
+}
+
+/* Form Group */
+.form-group {
+    margin-bottom: 15px;
+}
+
+.form-group label {
+    display: block;
+    font-size: 0.9em;
+    color: #333;
+    margin-bottom: 5px;
+}
+
+.form-group input {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    font-size: 0.95em;
+    box-sizing: border-box;
+    transition: border-color 0.3s;
+}
+
+.form-group input:focus {
+    border-color: #007bff;
+    outline: none;
+}
+
+
+/* Button Styling */
+.submit-button {
+    background: #007bff;
+    color: #fff;
+    padding: 10px 15px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 1em;
+    transition: background-color 0.3s ease;
+    width: 100%;
+}
+
+.submit-button:hover {
+    background-color: #0056b3;
+}
+
+/* Fade-in Effect */
+.fade-in {
+    animation: fadeIn 0.5s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+
+.error-message {
+    color: red;
+    font-size: 0.85em;
+    margin-top: 5px;
+    display: none; /* Hidden by default */
+}
+
+.submit-button:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
 }
