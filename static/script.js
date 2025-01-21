@@ -1,3 +1,5 @@
+let isFormSubmitted = false; // Default state: form not submitted
+
 // Toggle Chat Window
 function toggleChat() {
     const chatWindow = document.getElementById("chatWindow");
@@ -93,90 +95,195 @@ async function triggerBackendForForm() {
         }
     } catch (error) {
         chatContent.removeChild(loadingMessage);
-        addMessageToChat("Oops! It seems there’s a connection issue. Please try again!", "bot-message");
+        addMessageToChat("Network error. Please check your connection.", "bot-message");
         console.error("Fetch error:", error);
     }
 }
 
-// Display Form
 function displayForm() {
     const chatContent = document.getElementById("chatContent");
 
     const formHtml = `
         <div class="bot-message fade-in">
             <div class="form-container">
-                <h3 id="formHeading">Please provide your details</h3>
+                <h3 id="formHeading">Let's get to know you!</h3>
+                <p class="form-description">Let’s start by knowing a little about you. It won’t take long!</p>
                 <form id="userForm">
                     <div class="form-group">
-                        <label for="name">Name:</label>
-                        <input type="text" id="name" placeholder="Your full name" required>
+                        <label for="name">Name</label>
+                        <input type="text" id="name" placeholder="Enter your full name" required>
+                        <div class="error-message" id="nameError"></div>
                     </div>
                     <div class="form-group">
-                        <label for="email">Email:</label>
-                        <input type="email" id="email" placeholder="Your email address" required>
+                        <label for="email">Email</label>
+                        <input type="email" id="email" placeholder="Enter your email address" required>
+                        <div class="error-message" id="emailError"></div>
                     </div>
                     <div class="form-group">
-                        <label for="phone">Phone:</label>
-                        <input type="text" id="phone" placeholder="Your phone number" required>
+                        <label for="phone">Phone</label>
+                        <input type="text" id="phone" placeholder="Enter your phone number" required>
+                        <div class="error-message" id="phoneError"></div>
                     </div>
                     <div class="form-group">
-                        <label for="organization">Organization:</label>
-                        <input type="text" id="organization" placeholder="Your organization name" required>
+                        <label for="organization">Organization</label>
+                        <input type="text" id="organization" placeholder="Enter your organization name" required>
+                        <div class="error-message" id="organizationError"></div>
                     </div>
                     <div class="form-actions">
-                        <button type="button" class="submit-button" onclick="submitForm()">Submit</button>
+                        <button type="button" class="submit-button" onclick="submitForm()" disabled>Submit</button>
                     </div>
                 </form>
             </div>
         </div>`;
+
     chatContent.innerHTML += formHtml;
     chatContent.scrollTop = chatContent.scrollHeight;
+
+    // Add blur validation listeners
+    document.getElementById("name").addEventListener("blur", validateName);
+    document.getElementById("email").addEventListener("blur", validateEmail);
+    document.getElementById("phone").addEventListener("blur", validatePhone);
+    document.getElementById("organization").addEventListener("blur", validateOrganization);
+
+    // Add input event to enable the submit button after all fields are valid
+    document.getElementById("name").addEventListener("input", toggleSubmitButton);
+    document.getElementById("email").addEventListener("input", toggleSubmitButton);
+    document.getElementById("phone").addEventListener("input", toggleSubmitButton);
+    document.getElementById("organization").addEventListener("input", toggleSubmitButton);
 }
+
+
+// Validation Helper Functions
+function isValidEmail(email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/; // Basic email format
+    return emailRegex.test(email);
+}
+
+function isValidPhone(phone) {
+    const phoneRegex = /^\d{10}$/; // 10-digit phone number
+    return phoneRegex.test(phone);
+}
+
+function isValidName(name) {
+    const nameRegex = /^[a-zA-Z\s]+$/; // Allow only letters and spaces
+    return name.trim().length > 0 && nameRegex.test(name);
+}
+
+function isValidOrganization(organization) {
+    return organization.trim().length > 0 && organization.length <= 100; // Max 100 characters
+}
+
+
+function validateName() {
+    const name = document.getElementById("name").value.trim();
+    const nameError = document.getElementById("nameError");
+    if (!isValidName(name)) {
+        nameError.textContent = "Please enter a valid name (letters and spaces only).";
+        nameError.style.display = "block";
+    } else {
+        nameError.style.display = "none";
+    }
+}
+
+function validateEmail() {
+    const email = document.getElementById("email").value.trim();
+    const emailError = document.getElementById("emailError");
+    if (!isValidEmail(email)) {
+        emailError.textContent = "Oops! Your email address looks incomplete. Please check again.";
+        emailError.style.display = "block";
+    } else {
+        emailError.style.display = "none";
+    }
+}
+
+function validatePhone() {
+    const phone = document.getElementById("phone").value.trim();
+    const phoneError = document.getElementById("phoneError");
+    if (!isValidPhone(phone)) {
+        phoneError.textContent = "Please enter a valid 10-digit phone number.";
+        phoneError.style.display = "block";
+    } else {
+        phoneError.style.display = "none";
+    }
+}
+
+function validateOrganization() {
+    const organization = document.getElementById("organization").value.trim();
+    const organizationError = document.getElementById("organizationError");
+    if (!isValidOrganization(organization)) {
+        organizationError.textContent = "Please enter a valid organization name (max 100 characters).";
+        organizationError.style.display = "block";
+    } else {
+        organizationError.style.display = "none";
+    }
+}
+
+
+// Toggle Submit Button
+function toggleSubmitButton() {
+    const submitButton = document.querySelector(".submit-button");
+    const isFormValid =
+        isValidName(document.getElementById("name").value.trim()) &&
+        isValidEmail(document.getElementById("email").value.trim()) &&
+        isValidPhone(document.getElementById("phone").value.trim()) &&
+        isValidOrganization(document.getElementById("organization").value.trim());
+
+    submitButton.disabled = !isFormValid;
+}
+
 
 // Submit Form Data
 async function submitForm() {
-    const name = document.getElementById("name").value;
-    const email = document.getElementById("email").value;
-    const phone = document.getElementById("phone").value;
-    const organization = document.getElementById("organization").value;
+    const name = document.getElementById("name").value.trim();
+    const email = document.getElementById("email").value.trim();
+    const phone = document.getElementById("phone").value.trim();
+    const organization = document.getElementById("organization").value.trim();
 
-    if (name && email && phone && organization) {
-        try {
-            const response = await fetch(BACKEND_FORM_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    session_id: localStorage.getItem("session_id") || null,
-                    name,
-                    email,
-                    phone,
-                    organization,
-                }),
-            });
+    try {
+        const response = await fetch(BACKEND_FORM_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                session_id: localStorage.getItem("session_id") || null,
+                name,
+                email,
+                phone,
+                organization,
+            }),
+        });
 
-            if (response.ok) {
-                const data = await response.json();
+        if (response.ok) {
+            const data = await response.json();
 
-                // Update the heading dynamically
-                const formHeading = document.getElementById("formHeading");
-                if (formHeading) {
-                    formHeading.innerText = "Thanks for sharing your details! Now let's start our conversation about EPR.";
-                }
-
-                // Remove the form
-                document.getElementById("userForm").remove();
-
-            } else {
-                addMessageToChat("Error submitting your details. Please try again.", "bot-message");
+            // Update the heading dynamically
+            const formHeading = document.getElementById("formHeading");
+            if (formHeading) {
+                formHeading.innerText = "🌟Great! Let’s get started with your EPR-related questions.";
             }
-        } catch (error) {
-            addMessageToChat("Network error while submitting your details.", "bot-message");
-            console.error("Fetch error:", error);
+
+            // Remove the introductory line
+            const formDescription = document.querySelector(".form-description");
+            if (formDescription) {
+                formDescription.style.display = "none";
+            }
+
+            // Remove the form
+            document.getElementById("userForm").remove();
+
+            // Allow user to send queries
+            isFormSubmitted = true;
+
+            addMessageToChat("You can now start sending your queries.", "bot-message");
+        } else {
+            addMessageToChat("Error submitting your details. Please try again.", "bot-message");
         }
-    } else {
-        addMessageToChat("Please fill out all fields before submitting.", "bot-message");
+    } catch (error) {
+        addMessageToChat("Network error while submitting your details.", "bot-message");
+        console.error("Fetch error:", error);
     }
 }
+
+
 
 // Add Message to Chat
 function addMessageToChat(message, className) {
@@ -190,13 +297,20 @@ function addMessageToChat(message, className) {
 
 // Handle Enter Key
 function checkEnter(event) {
-    if (event.key === "Enter") {
+    if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
         sendMessage();
     }
 }
 
+
 // Send User Message
 async function sendMessage() {
+    if (!isFormSubmitted) {
+        addMessageToChat("Please complete the form before sending queries.", "bot-message");
+        return;
+    }
+
     const userMessage = document.getElementById("userMessage").value.trim();
     const chatContent = document.getElementById("chatContent");
 
@@ -239,3 +353,4 @@ async function sendMessage() {
         }
     }
 }
+
