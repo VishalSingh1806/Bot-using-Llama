@@ -944,6 +944,16 @@ async def chat_endpoint(request: Request):
 
         # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
+        # Check for "Calculate Target" intent
+        if "calculate my target" in question or "how to calculate my target" in question:
+            return JSONResponse(
+                content={
+                    "message": "Sure, I can help you calculate your target. Please enter the total plastic introduced and the target percentage below.",
+                    "show_calculator": True,  # Add a flag to show the calculator on the frontend
+                    "session_id": session_id,
+                },
+                status_code=200,
+            )
 
         # Step 2: Compute query embedding
         user_embedding = await compute_embedding(question)
