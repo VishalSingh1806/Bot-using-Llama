@@ -1159,3 +1159,20 @@ async def collect_user_data(request: Request):
             content={"message": "An error occurred while collecting user data."},
             status_code=500,
         )
+
+
+@app.post("/calculate_target")
+async def calculate_target(request: Request):
+    try:
+        data = await request.json()
+        total_plastic = data.get("total_plastic")
+        target_percentage = data.get("target_percentage")  # Provided dynamically or fetched based on rules
+
+        if not total_plastic or not target_percentage:
+            raise HTTPException(status_code=400, detail="Missing required fields: total_plastic or target_percentage")
+
+        target = float(total_plastic) * float(target_percentage) / 100
+        return {"target": target, "message": "Target calculated successfully"}
+    except Exception as e:
+        logger.exception("Error in calculate_target endpoint")
+        raise HTTPException(status_code=500, detail="An error occurred while calculating the target")
