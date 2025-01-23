@@ -1163,16 +1163,37 @@ async def collect_user_data(request: Request):
 
 @app.post("/calculate_target")
 async def calculate_target(request: Request):
+    """
+    Calculate the recycling target based on total plastic and target percentage.
+    """
     try:
         data = await request.json()
         total_plastic = data.get("total_plastic")
-        target_percentage = data.get("target_percentage")  # Provided dynamically or fetched based on rules
+        target_percentage = data.get("target_percentage")
 
-        if not total_plastic or not target_percentage:
+        # Validation for missing fields
+        if total_plastic is None or target_percentage is None:
             raise HTTPException(status_code=400, detail="Missing required fields: total_plastic or target_percentage")
 
-        target = float(total_plastic) * float(target_percentage) / 100
+        # Validation for numeric inputs
+        try:
+            total_plastic = float(total_plastic)
+            target_percentage = float(target_percentage)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Inputs must be numeric.")
+
+        # Ensure positive values
+        if total_plastic <= 0 or target_percentage <= 0:
+            raise HTTPException(status_code=400, detail="Values must be greater than zero.")
+
+        # Calculate the target
+        target = total_plastic * target_percentage / 100
+        logger.info(f"Target calculated successfully: {target:.2f} tons for {total_plastic} tons at {target_percentage}%.")
+
         return {"target": target, "message": "Target calculated successfully"}
+    except HTTPException as http_error:
+        logger.warning(f"Validation error in calculate_target: {http_error.detail}")
+        raise
     except Exception as e:
-        logger.exception("Error in calculate_target endpoint")
-        raise HTTPException(status_code=500, detail="An error occurred while calculating the target")
+        logger.exception("Unexpected error in calculate_target")
+        raise HTTPException(status_code=500, detail="An error occurred while calculating the target.")
