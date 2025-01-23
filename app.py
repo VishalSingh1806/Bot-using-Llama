@@ -857,6 +857,16 @@ def evict_oldest_sessions():
 
     return user_details, next_question
 
+# Define keywords or patterns for target calculation
+TARGET_KEYWORDS = ["calculate my target", "calculate target", "target calculation", "recycling target"]
+
+# Check if the query is asking for target calculation
+def is_target_calculation_query(query):
+    for keyword in TARGET_KEYWORDS:
+        if keyword in query.lower():
+            return True
+    return False
+
 # Updated /chat endpoint
 @app.post("/chat")
 async def chat_endpoint(request: Request):
@@ -945,16 +955,21 @@ async def chat_endpoint(request: Request):
         # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
         # Check for "Calculate Target" intent
-        if "calculate my target" in question or "how to calculate my target" in question:
+        if is_target_calculation_query(question):
+            logger.info(f"Session {session_id}: Target calculation query detected.")
             return JSONResponse(
                 content={
-                    "message": "Sure, I can help you calculate your target. Please enter the total plastic introduced and the target percentage below.",
-                    "show_calculator": True,  # Add a flag to show the calculator on the frontend
-                    "session_id": session_id,
+                    "message": "Let's calculate your recycling target.",
+                    "show_calculator": True,  # Instruct frontend to show the calculator
                 },
                 status_code=200,
             )
-
+                # Enhanced fallback response
+        fallback_response = await enhanced_fallback_response(question, session_id)
+        return JSONResponse(
+            content={"message": fallback_response},
+            status_code=200,
+        )
         # Step 2: Compute query embedding
         user_embedding = await compute_embedding(question)
 
