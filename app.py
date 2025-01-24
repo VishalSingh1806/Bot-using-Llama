@@ -841,50 +841,40 @@ async def get_session_details(session_id: str):
     return session_memory[session_id]
 
 
-# def cache_lookup(query_embedding, threshold=0.85):
-#     """
-#     Look up the cache for a similar question and its answer from Redis or in-memory cache.
-#     Returns the best match and its similarity score.
-#     """
-#     try:
-#         max_similarity = 0.0
-#         best_answer = None
+def cache_lookup(query_embedding, threshold=0.9):
+    """
+    Look up the cache for a similar question and its answer from Redis or in-memory cache.
+    Returns the best match and its similarity score.
+    """
+    try:
+        max_similarity = 0.0
+        best_answer = None
 
-#         # Efficiently iterate over cached items in Redis
-#         for cached_question, cached_data in redis_client.hscan_iter("query_cache"):
-#             try:
-#                 cached_data = json.loads(cached_data)  # Deserialize Redis JSON
-#                 cached_embedding = np.array(cached_data.get("embedding"))
-#                 cached_answer = cached_data.get("answer")
+        # Efficiently iterate over cached items in Redis
+        for key in redis_client.scan_iter("query_cache:*"):
+            cached_data = redis_client.hgetall(key)
+            if "embedding" in cached_data and "answer" in cached_data:
+                cached_embedding = np.array(json.loads(cached_data["embedding"]))
+                cached_answer = cached_data["answer"]
 
-#                 # Validate cached data
-#                 if cached_embedding is None or cached_answer is None:
-#                     logger.warning(f"Invalid cache entry: {cached_data}")
-#                     continue
+                # Calculate similarity
+                similarity = cosine_similarity(query_embedding, cached_embedding.reshape(1, -1))[0][0]
+                if similarity > max_similarity and similarity >= threshold:
+                    max_similarity = similarity
+                    best_answer = cached_answer
 
-#                 # Calculate similarity
-#                 similarity = cosine_similarity(query_embedding, cached_embedding.reshape(1, -1))[0][0]
-#                 logger.debug(f"Similarity with cached question '{cached_question}': {similarity:.2f}")
+        if best_answer:
+            logger.info(f"Cache hit with similarity {max_similarity:.2f}, Answer: {best_answer}")
+        else:
+            logger.info("Cache miss for the query.")
 
-#                 # Check if this is the best match so far
-#                 if similarity > max_similarity and similarity >= threshold:
-#                     max_similarity = similarity
-#                     best_answer = cached_answer
-#             except Exception as e:
-#                 logger.error(f"Error processing cached data: {e}")
-#                 continue
+        return best_answer, max_similarity
 
-#         # Log the result
-#         if best_answer:
-#             logger.info(f"Cache hit with similarity {max_similarity:.2f}, Answer: {best_answer}")
-#         else:
-#             logger.info("Cache miss for the query.")
+    except Exception as e:
+        logger.exception("Error during cache lookup")
+        return None, 0.0
 
-#         return best_answer, max_similarity
 
-#     except Exception as e:
-#         logger.exception("Error during cache lookup")
-#         return None, 0.0
 
 # Configuration for maximum session management
 MAX_SESSIONS = 1000  # Maximum number of active sessions allowed in memory
@@ -1038,10 +1028,15 @@ async def chat_endpoint(request: Request):
             # Cache the refined response in Redis
             await asyncio.to_thread(
                 redis_client.hset,
-                "query_cache",
-                question,
-                json.dumps({"embedding": user_embedding.tolist(), "answer": refined_answer}),
+                f"query_cache:{question}",
+                mapping={
+                    "embedding": json.dumps(user_embedding.tolist()),
+                    "answer": refined_answer,
+                },
             )
+            logger.info(f"Cached question: {question} with answer: {refined_answer}")
+
+
 
             # Update session context with the refined answer
             update_session_context(session_id, raw_question, refined_answer)
@@ -1218,3 +1213,39 @@ async def collect_user_data(request: Request):
             content={"message": "An error occurred while collecting user data."},
             status_code=500,
         )
+
+def debug_redis_cache():
+    """Print all cached keys and their values for debugging."""
+    try:
+        for key in redis_client.scan_iter("query_cache:*"):
+            cached_data = redis_client.hgetall(key)
+            logger.info(f"Key: {key}, Data: {cached_data}")
+    except Exception as e:
+        logger.error(f"Error while debugging Redis cache: {e}")
+
+def repopulate_redis_cache():
+    """Repopulate Redis cache from the validatedqa table in the database."""
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+
+        # Fetch all rows from validatedqa
+        cursor.execute("SELECT question, answer, question_embedding FROM validatedqa")
+        rows = cursor.fetchall()
+
+        for row in rows:
+            question, answer, question_embedding = row
+            redis_client.hset(
+                f"query_cache:{question}",
+                mapping={
+                    "embedding": json.dumps(np.frombuffer(question_embedding, dtype=np.float32).tolist()),
+                    "answer": answer,
+                },
+            )
+            logger.info(f"Cached question: {question}")
+
+        release_db_connection(conn)
+        logger.info("Redis cache repopulated successfully.")
+
+    except Exception as e:
+        logger.exception("Error repopulating Redis cache")
