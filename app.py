@@ -55,7 +55,7 @@ keyword_frequency = defaultdict(int)  # Defaultdict to track keyword frequency
 
 # Global cache for storing recently processed questions and answers
 CACHE = {}
-CACHE_THRESHOLD = 0.9 if len(query.split()) > 5 else 0.75 # Minimum similarity for cache retrieval
+CACHE_THRESHOLD = 0.75 # Minimum similarity for cache retrieval
 
 # Cache for dynamic query embeddings
 embedding_cache = {}
