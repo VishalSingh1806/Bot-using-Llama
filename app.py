@@ -937,7 +937,7 @@ def evict_oldest_sessions():
 
     return user_details, next_question
 
-# Updated /chat endpoint
+# Updated /chat endpoint with consistent LLaMA refinement
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     start_time = time.time()  # Measure response time
@@ -1030,34 +1030,29 @@ async def chat_endpoint(request: Request):
 
         # Step 3: Cache lookup using Redis
         cached_answer, cached_similarity = cache_lookup(user_embedding)
-        if cached_answer and cached_similarity >= CACHE_THRESHOLD and cached_answer.strip():
+        if cached_answer and cached_similarity >= CACHE_THRESHOLD:
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}, Answer: {cached_answer}")
-            update_session_context(session_id, raw_question, cached_answer)
+
+            # Refine cached answer with LLaMA
+            refined_answer = await refine_with_llama(question, cached_answer)
+            update_session_context(session_id, raw_question, refined_answer)
+
             return JSONResponse(
                 content={
-                    "answer": cached_answer,
+                    "answer": refined_answer,
                     "confidence": float(cached_similarity),
                     "source": "cache",
                     "response_time": f"{time.time() - start_time:.2f} seconds",
                 }
             )
-        else:
-            logger.warning(f"Cache hit but no valid answer or low similarity. Similarity: {cached_similarity:.2f}, Answer: {cached_answer}")
 
         # Step 4: Database search for the best match
         db_answer, confidence, source = await query_validated_qa(user_embedding, question)
-        if db_answer and confidence >= 0.5 and db_answer.strip():
+        if db_answer and confidence >= 0.5:
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}, Answer: {db_answer}")
 
             # Refine the response with LLaMA
-            try:
-                refined_answer = await refine_with_llama(question, db_answer)
-                if not refined_answer:
-                    logger.warning(f"LLaMA returned an empty response for session {session_id}. Using database answer.")
-                    refined_answer = db_answer
-            except Exception as llama_error:
-                logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
-                refined_answer = db_answer
+            refined_answer = await refine_with_llama(question, db_answer)
 
             # Cache the refined response in Redis
             await asyncio.to_thread(
@@ -1070,9 +1065,6 @@ async def chat_endpoint(request: Request):
             )
             logger.info(f"Cached question: {question} with answer: {refined_answer}")
 
-
-
-            # Update session context with the refined answer
             update_session_context(session_id, raw_question, refined_answer)
 
             return JSONResponse(
@@ -1083,44 +1075,227 @@ async def chat_endpoint(request: Request):
                     "response_time": f"{time.time() - start_time:.2f} seconds",
                 }
             )
-        else:
-            logger.warning(f"Database search did not yield a valid answer. Confidence: {confidence:.2f}, Answer: {db_answer}")
 
         # Step 5: Enhanced fallback response
-        logger.info(f"Fallback triggered for session {session_id}. No valid cache or database match found.")
         fallback_response = await enhanced_fallback_response(question, session_id)
-        logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
+        refined_fallback = await refine_with_llama(question, fallback_response)
 
         # Cache the fallback response in Redis
         await asyncio.to_thread(
             redis_client.hset,
-            "query_cache",
-            question,
-            json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
+            f"query_cache:{question}",
+            mapping={
+                "embedding": json.dumps(user_embedding.tolist()),
+                "answer": refined_fallback,
+            },
         )
+        logger.info(f"Fallback response cached for session {session_id}: {refined_fallback}")
 
-        # Update session context with fallback response
-        update_session_context(session_id, raw_question, fallback_response)
+        update_session_context(session_id, raw_question, refined_fallback)
 
         return JSONResponse(
             content={
-                "answer": fallback_response,
+                "answer": refined_fallback,
                 "confidence": 0.5,
                 "source": "fuzzy fallback",
                 "response_time": f"{time.time() - start_time:.2f} seconds",
             }
         )
 
-    except HTTPException as e:
-        logger.warning(f"HTTP error occurred: {e.detail}")
-        ERROR_COUNT.inc()  # Increment error counter for Prometheus
-        raise e
     except Exception as e:
         logger.exception("Unhandled exception in /chat endpoint.")
-        ERROR_COUNT.inc()  # Increment error counter for Prometheus
-        raise HTTPException(status_code=500, detail="An internal server error occurred.")
+        return JSONResponse(
+            content={"message": "An internal server error occurred."}, status_code=500
+        )
     finally:
-        REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
+        REQUEST_LATENCY.observe(time.time() - start_time)
+
+
+# Updated /chat endpoint (this doesn't refine cached data)
+# @app.post("/chat")
+# async def chat_endpoint(request: Request):
+#     start_time = time.time()  # Measure response time
+#     try:
+#         # Parse request data
+#         data = await request.json()
+#         session_id = data.get("session_id", None)
+
+#         # Generate a new session ID if not provided
+#         if not session_id:
+#             session_id = str(uuid.uuid4())
+#             logger.info(f"Generated new session ID: {session_id}")
+
+#         # Key for session in Redis
+#         session_key = f"session:{session_id}"
+#         session_data = await asyncio.to_thread(redis_client.hgetall, session_key)
+
+#         # Initialize session if it doesn't exist
+#         if not session_data:
+#             session_data = {
+#                 "history": json.dumps([]),  # Store history as JSON string
+#                 "context": "",
+#                 "last_interaction": datetime.utcnow().isoformat(),
+#                 "user_data_collected": "false",  # Flag for user data collection
+#                 "user_name": "",  # Placeholder for user name
+#             }
+#             await asyncio.to_thread(redis_client.hmset, session_key, session_data)
+#             logger.info(f"New session initialized: {session_id}")
+#             return JSONResponse(
+#                 content={
+#                     "message": "Before we start, please provide your details.",
+#                     "redirect_to": "/collect_user_data",
+#                     "session_id": session_id,
+#                 },
+#                 status_code=200,
+#             )
+
+#         # Check if user data is collected
+#         if session_data.get("user_data_collected", "false") == "false":
+#             logger.info(f"Session {session_id}: User data not collected. Prompting for user data collection.")
+#             return JSONResponse(
+#                 content={
+#                     "message": "Before we start, please provide your details.",
+#                     "redirect_to": "/collect_user_data",
+#                     "session_id": session_id,
+#                 },
+#                 status_code=200,
+#             )
+
+#         # Fetch user's name for personalization
+#         user_name = session_data.get("user_name", "").strip()
+
+#         # Check for empty message or welcome scenario
+#         raw_question = data.get("message", "").strip()
+#         if not raw_question:
+#             welcome_message = (
+#                 f"Welcome back {user_name}, how can I help you today?"
+#                 if user_name
+#                 else "Welcome back! Please type your question."
+#             )
+#             logger.info(f"Session {session_id}: Empty message received. Sending welcome message.")
+#             return JSONResponse(
+#                 content={"message": welcome_message, "session_id": session_id},
+#                 status_code=200,
+#             )
+
+#         logger.info(f"Session {session_id}: Received question: {raw_question}")
+
+#         # Update session history
+#         history = json.loads(session_data.get("history", "[]"))
+#         history.append(
+#             {
+#                 "query": raw_question,
+#                 "response": "Processing...",
+#                 "timestamp": datetime.utcnow().isoformat(),
+#             }
+#         )
+#         session_data["history"] = json.dumps(history)
+#         session_data["last_interaction"] = datetime.utcnow().isoformat()
+
+#         # Save session data to Redis
+#         await asyncio.to_thread(redis_client.hmset, session_key, session_data)
+#         await asyncio.to_thread(redis_client.expire, session_key, int(SESSION_TIMEOUT.total_seconds()))
+
+#         # Step 1: Preprocess the query
+#         question = preprocess_query(raw_question, session_id)
+
+#         # Step 2: Compute query embedding
+#         user_embedding = await compute_embedding(question)
+
+#         # Step 3: Cache lookup using Redis
+#         cached_answer, cached_similarity = cache_lookup(user_embedding)
+#         if cached_answer and cached_similarity >= CACHE_THRESHOLD and cached_answer.strip():
+#             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}, Answer: {cached_answer}")
+#             update_session_context(session_id, raw_question, cached_answer)
+#             return JSONResponse(
+#                 content={
+#                     "answer": cached_answer,
+#                     "confidence": float(cached_similarity),
+#                     "source": "cache",
+#                     "response_time": f"{time.time() - start_time:.2f} seconds",
+#                 }
+#             )
+#         else:
+#             logger.warning(f"Cache hit but no valid answer or low similarity. Similarity: {cached_similarity:.2f}, Answer: {cached_answer}")
+
+#         # Step 4: Database search for the best match
+#         db_answer, confidence, source = await query_validated_qa(user_embedding, question)
+#         if db_answer and confidence >= 0.5 and db_answer.strip():
+#             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}, Answer: {db_answer}")
+
+#             # Refine the response with LLaMA
+#             try:
+#                 refined_answer = await refine_with_llama(question, db_answer)
+#                 if not refined_answer:
+#                     logger.warning(f"LLaMA returned an empty response for session {session_id}. Using database answer.")
+#                     refined_answer = db_answer
+#             except Exception as llama_error:
+#                 logger.error(f"LLaMA refinement failed for session {session_id}: {llama_error}")
+#                 refined_answer = db_answer
+
+#             # Cache the refined response in Redis
+#             await asyncio.to_thread(
+#                 redis_client.hset,
+#                 f"query_cache:{question}",
+#                 mapping={
+#                     "embedding": json.dumps(user_embedding.tolist()),
+#                     "answer": refined_answer,
+#                 },
+#             )
+#             logger.info(f"Cached question: {question} with answer: {refined_answer}")
+
+
+
+#             # Update session context with the refined answer
+#             update_session_context(session_id, raw_question, refined_answer)
+
+#             return JSONResponse(
+#                 content={
+#                     "answer": refined_answer,
+#                     "confidence": float(confidence),
+#                     "source": source,
+#                     "response_time": f"{time.time() - start_time:.2f} seconds",
+#                 }
+#             )
+#         else:
+#             logger.warning(f"Database search did not yield a valid answer. Confidence: {confidence:.2f}, Answer: {db_answer}")
+
+#         # Step 5: Enhanced fallback response
+#         logger.info(f"Fallback triggered for session {session_id}. No valid cache or database match found.")
+#         fallback_response = await enhanced_fallback_response(question, session_id)
+#         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
+
+#         # Cache the fallback response in Redis
+#         await asyncio.to_thread(
+#             redis_client.hset,
+#             "query_cache",
+#             question,
+#             json.dumps({"embedding": user_embedding.tolist(), "answer": fallback_response}),
+#         )
+
+#         # Update session context with fallback response
+#         update_session_context(session_id, raw_question, fallback_response)
+
+#         return JSONResponse(
+#             content={
+#                 "answer": fallback_response,
+#                 "confidence": 0.5,
+#                 "source": "fuzzy fallback",
+#                 "response_time": f"{time.time() - start_time:.2f} seconds",
+#             }
+#         )
+
+#     except HTTPException as e:
+#         logger.warning(f"HTTP error occurred: {e.detail}")
+#         ERROR_COUNT.inc()  # Increment error counter for Prometheus
+#         raise e
+#     except Exception as e:
+#         logger.exception("Unhandled exception in /chat endpoint.")
+#         ERROR_COUNT.inc()  # Increment error counter for Prometheus
+#         raise HTTPException(status_code=500, detail="An internal server error occurred.")
+#     finally:
+#         REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
+
 
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
