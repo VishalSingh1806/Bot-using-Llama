@@ -192,7 +192,8 @@ async def lifespan(app: FastAPI):
 
     # Load Sentence-BERT model (cached)
     load_sentence_bert()
-
+    # Precompute and store embeddings in Redis
+    await precompute_and_store_embeddings()
     # Precompute static embeddings for reference queries
     try:
         reference_queries = [
@@ -841,16 +842,49 @@ async def get_session_details(session_id: str):
     return session_memory[session_id]
 
 
+# def cache_lookup(query_embedding, threshold=0.9):
+#     """
+#     Look up the cache for a similar question and its answer from Redis or in-memory cache.
+#     Returns the best match and its similarity score.
+#     """
+#     try:
+#         max_similarity = 0.0
+#         best_answer = None
+
+#         # Efficiently iterate over cached items in Redis
+#         for key in redis_client.scan_iter("query_cache:*"):
+#             cached_data = redis_client.hgetall(key)
+#             if "embedding" in cached_data and "answer" in cached_data:
+#                 cached_embedding = np.array(json.loads(cached_data["embedding"]))
+#                 cached_answer = cached_data["answer"]
+
+#                 # Calculate similarity
+#                 similarity = cosine_similarity(query_embedding, cached_embedding.reshape(1, -1))[0][0]
+#                 if similarity > max_similarity and similarity >= threshold:
+#                     max_similarity = similarity
+#                     best_answer = cached_answer
+
+#         if best_answer:
+#             logger.info(f"Cache hit with similarity {max_similarity:.2f}, Answer: {best_answer}")
+#         else:
+#             logger.info("Cache miss for the query.")
+
+#         return best_answer, max_similarity
+
+#     except Exception as e:
+#         logger.exception("Error during cache lookup")
+#         return None, 0.0
+
 def cache_lookup(query_embedding, threshold=0.9):
     """
-    Look up the cache for a similar question and its answer from Redis or in-memory cache.
+    Look up the cache for a similar question and its answer from Redis.
     Returns the best match and its similarity score.
     """
     try:
         max_similarity = 0.0
         best_answer = None
 
-        # Efficiently iterate over cached items in Redis
+        # Iterate over cached items in Redis
         for key in redis_client.scan_iter("query_cache:*"):
             cached_data = redis_client.hgetall(key)
             if "embedding" in cached_data and "answer" in cached_data:
@@ -871,7 +905,7 @@ def cache_lookup(query_embedding, threshold=0.9):
         return best_answer, max_similarity
 
     except Exception as e:
-        logger.exception("Error during cache lookup")
+        logger.exception("Error during cache lookup.")
         return None, 0.0
 
 
@@ -1249,3 +1283,42 @@ def repopulate_redis_cache():
 
     except Exception as e:
         logger.exception("Error repopulating Redis cache")
+
+async def precompute_and_store_embeddings():
+    """Fetch questions and answers from the database, compute embeddings, and store them in Redis."""
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+
+        # Fetch all questions and answers from the database
+        cursor.execute("SELECT question, answer FROM validatedqa")
+        rows = cursor.fetchall()
+
+        if not rows:
+            logger.warning("No data found in the database to precompute embeddings.")
+            return
+
+        model = load_sentence_bert()
+
+        for row in rows:
+            question, answer = row
+
+            # Compute embedding for the question
+            embedding = model.encode(question).tolist()
+
+            # Store question, answer, and embedding in Redis
+            redis_client.hset(
+                f"query_cache:{question}",
+                mapping={
+                    "answer": answer,
+                    "embedding": json.dumps(embedding)
+                }
+            )
+            logger.info(f"Cached question: {question}")
+
+        release_db_connection(conn)
+        logger.info("Precomputed embeddings stored in Redis successfully.")
+
+    except Exception as e:
+        logger.exception("Error during precomputing and storing embeddings in Redis.")
+
