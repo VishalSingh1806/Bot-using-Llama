@@ -938,6 +938,7 @@ def evict_oldest_sessions():
     return user_details, next_question
 
 # Updated /chat endpoint with consistent LLaMA refinement
+# Updated /chat endpoint with consistent LLaMA refinement
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     start_time = time.time()  # Measure response time
@@ -1034,7 +1035,7 @@ async def chat_endpoint(request: Request):
             logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}, Answer: {cached_answer}")
 
             # Refine cached answer with LLaMA
-            refined_answer = await refine_with_llama(question, cached_answer)
+            refined_answer = refine_with_llama(question, cached_answer)
             update_session_context(session_id, raw_question, refined_answer)
 
             return JSONResponse(
@@ -1052,7 +1053,7 @@ async def chat_endpoint(request: Request):
             logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}, Answer: {db_answer}")
 
             # Refine the response with LLaMA
-            refined_answer = await refine_with_llama(question, db_answer)
+            refined_answer = refine_with_llama(question, db_answer)
 
             # Cache the refined response in Redis
             await asyncio.to_thread(
@@ -1078,7 +1079,7 @@ async def chat_endpoint(request: Request):
 
         # Step 5: Enhanced fallback response
         fallback_response = await enhanced_fallback_response(question, session_id)
-        refined_fallback = await refine_with_llama(question, fallback_response)
+        refined_fallback = refine_with_llama(question, fallback_response)
 
         # Cache the fallback response in Redis
         await asyncio.to_thread(
