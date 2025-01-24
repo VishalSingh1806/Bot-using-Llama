@@ -841,50 +841,50 @@ async def get_session_details(session_id: str):
     return session_memory[session_id]
 
 
-def cache_lookup(query_embedding, threshold=0.85):
-    """
-    Look up the cache for a similar question and its answer from Redis or in-memory cache.
-    Returns the best match and its similarity score.
-    """
-    try:
-        max_similarity = 0.0
-        best_answer = None
+# def cache_lookup(query_embedding, threshold=0.85):
+#     """
+#     Look up the cache for a similar question and its answer from Redis or in-memory cache.
+#     Returns the best match and its similarity score.
+#     """
+#     try:
+#         max_similarity = 0.0
+#         best_answer = None
 
-        # Efficiently iterate over cached items in Redis
-        for cached_question, cached_data in redis_client.hscan_iter("query_cache"):
-            try:
-                cached_data = json.loads(cached_data)  # Deserialize Redis JSON
-                cached_embedding = np.array(cached_data.get("embedding"))
-                cached_answer = cached_data.get("answer")
+#         # Efficiently iterate over cached items in Redis
+#         for cached_question, cached_data in redis_client.hscan_iter("query_cache"):
+#             try:
+#                 cached_data = json.loads(cached_data)  # Deserialize Redis JSON
+#                 cached_embedding = np.array(cached_data.get("embedding"))
+#                 cached_answer = cached_data.get("answer")
 
-                # Validate cached data
-                if cached_embedding is None or cached_answer is None:
-                    logger.warning(f"Invalid cache entry: {cached_data}")
-                    continue
+#                 # Validate cached data
+#                 if cached_embedding is None or cached_answer is None:
+#                     logger.warning(f"Invalid cache entry: {cached_data}")
+#                     continue
 
-                # Calculate similarity
-                similarity = cosine_similarity(query_embedding, cached_embedding.reshape(1, -1))[0][0]
-                logger.debug(f"Similarity with cached question '{cached_question}': {similarity:.2f}")
+#                 # Calculate similarity
+#                 similarity = cosine_similarity(query_embedding, cached_embedding.reshape(1, -1))[0][0]
+#                 logger.debug(f"Similarity with cached question '{cached_question}': {similarity:.2f}")
 
-                # Check if this is the best match so far
-                if similarity > max_similarity and similarity >= threshold:
-                    max_similarity = similarity
-                    best_answer = cached_answer
-            except Exception as e:
-                logger.error(f"Error processing cached data: {e}")
-                continue
+#                 # Check if this is the best match so far
+#                 if similarity > max_similarity and similarity >= threshold:
+#                     max_similarity = similarity
+#                     best_answer = cached_answer
+#             except Exception as e:
+#                 logger.error(f"Error processing cached data: {e}")
+#                 continue
 
-        # Log the result
-        if best_answer:
-            logger.info(f"Cache hit with similarity {max_similarity:.2f}, Answer: {best_answer}")
-        else:
-            logger.info("Cache miss for the query.")
+#         # Log the result
+#         if best_answer:
+#             logger.info(f"Cache hit with similarity {max_similarity:.2f}, Answer: {best_answer}")
+#         else:
+#             logger.info("Cache miss for the query.")
 
-        return best_answer, max_similarity
+#         return best_answer, max_similarity
 
-    except Exception as e:
-        logger.exception("Error during cache lookup")
-        return None, 0.0
+#     except Exception as e:
+#         logger.exception("Error during cache lookup")
+#         return None, 0.0
 
 # Configuration for maximum session management
 MAX_SESSIONS = 1000  # Maximum number of active sessions allowed in memory
