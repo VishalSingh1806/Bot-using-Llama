@@ -857,16 +857,6 @@ def evict_oldest_sessions():
 
     return user_details, next_question
 
-# Define keywords or patterns for target calculation
-TARGET_KEYWORDS = ["calculate my target", "calculate target", "target calculation", "recycling target"]
-
-# Check if the query is asking for target calculation
-def is_target_calculation_query(query):
-    for keyword in TARGET_KEYWORDS:
-        if keyword in query.lower():
-            return True
-    return False
-
 # Updated /chat endpoint
 @app.post("/chat")
 async def chat_endpoint(request: Request):
@@ -954,22 +944,7 @@ async def chat_endpoint(request: Request):
 
         # Step 1: Preprocess the query
         question = preprocess_query(raw_question, session_id)
-        # Check for "Calculate Target" intent
-        if is_target_calculation_query(question):
-            logger.info(f"Session {session_id}: Target calculation query detected.")
-            return JSONResponse(
-                content={
-                    "message": "Let's calculate your recycling target.",
-                    "show_calculator": True,  # Instruct frontend to show the calculator
-                },
-                status_code=200,
-            )
-                # Enhanced fallback response
-        fallback_response = await enhanced_fallback_response(question, session_id)
-        return JSONResponse(
-            content={"message": fallback_response},
-            status_code=200,
-        )
+
         # Step 2: Compute query embedding
         user_embedding = await compute_embedding(question)
 
@@ -1184,41 +1159,3 @@ async def collect_user_data(request: Request):
             content={"message": "An error occurred while collecting user data."},
             status_code=500,
         )
-
-
-@app.post("/calculate_target")
-async def calculate_target(request: Request):
-    """
-    Calculate the recycling target based on total plastic and target percentage.
-    """
-    try:
-        data = await request.json()
-        total_plastic = data.get("total_plastic")
-        target_percentage = data.get("target_percentage")
-
-        # Validation for missing fields
-        if total_plastic is None or target_percentage is None:
-            raise HTTPException(status_code=400, detail="Missing required fields: total_plastic or target_percentage")
-
-        # Validation for numeric inputs
-        try:
-            total_plastic = float(total_plastic)
-            target_percentage = float(target_percentage)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Inputs must be numeric.")
-
-        # Ensure positive values
-        if total_plastic <= 0 or target_percentage <= 0:
-            raise HTTPException(status_code=400, detail="Values must be greater than zero.")
-
-        # Calculate the target
-        target = total_plastic * target_percentage / 100
-        logger.info(f"Target calculated successfully: {target:.2f} tons for {total_plastic} tons at {target_percentage}%.")
-
-        return {"target": target, "message": "Target calculated successfully"}
-    except HTTPException as http_error:
-        logger.warning(f"Validation error in calculate_target: {http_error.detail}")
-        raise
-    except Exception as e:
-        logger.exception("Unexpected error in calculate_target")
-        raise HTTPException(status_code=500, detail="An error occurred while calculating the target.")
