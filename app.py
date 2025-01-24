@@ -497,7 +497,7 @@ def save_keywords_to_file():
 
 
 async def query_validated_qa(user_embedding, question: str):
-    """Query the ValidatedQA table for the best match."""
+    """Query the validatedqa table for the best match."""
     conn = None
     try:
         conn = connect_db()
@@ -554,9 +554,9 @@ async def query_validated_qa(user_embedding, question: str):
 
 
 def fetch_rows_postgresql(cursor):
-    """Fetch rows from the ValidatedQA table."""
+    """Fetch rows from the validatedqa table."""
     try:
-        cursor.execute("SELECT question, answer, question_embedding FROM ValidatedQA")
+        cursor.execute("SELECT question, answer, question_embedding FROM validatedqa")
         rows = cursor.fetchall()
         return rows
     except Exception as e:
@@ -784,37 +784,37 @@ def test_db_connection():
         else:
             logger.warning("No tables found in the database.")
 
-        # Check if the `ValidatedQA` table exists
-        if ("ValidatedQA",) in tables:
-            logger.info("The 'ValidatedQA' table exists. Checking its structure...")
+        # Check if the `validatedqa` table exists
+        if ("validatedqa",) in tables:
+            logger.info("The 'validatedqa' table exists. Checking its structure...")
 
-            # Retrieve and log the columns in the `ValidatedQA` table
+            # Retrieve and log the columns in the `validatedqa` table
             cursor.execute("""
                 SELECT column_name, data_type
                 FROM information_schema.columns
-                WHERE table_name = 'ValidatedQA';
+                WHERE table_name = 'validatedqa';
             """)
             columns = cursor.fetchall()
             if columns:
-                logger.info(f"Columns in 'ValidatedQA' table: {columns}")
+                logger.info(f"Columns in 'validatedqa' table: {columns}")
             else:
-                logger.warning("The 'ValidatedQA' table has no columns or is inaccessible.")
+                logger.warning("The 'validatedqa' table has no columns or is inaccessible.")
 
-            # Check if the `ValidatedQA` table contains any data
-            logger.info("Checking for data in the 'ValidatedQA' table...")
-            cursor.execute("SELECT COUNT(*) FROM ValidatedQA;")
+            # Check if the `validatedqa` table contains any data
+            logger.info("Checking for data in the 'validatedqa' table...")
+            cursor.execute("SELECT COUNT(*) FROM validatedqa;")
             row_count = cursor.fetchone()[0]
             if row_count > 0:
-                logger.info(f"The 'ValidatedQA' table contains {row_count} rows.")
+                logger.info(f"The 'validatedqa' table contains {row_count} rows.")
 
                 # Fetch a sample row for verification
-                cursor.execute("SELECT * FROM ValidatedQA LIMIT 1;")
+                cursor.execute("SELECT * FROM validatedqa LIMIT 1;")
                 sample_row = cursor.fetchone()
-                logger.info(f"Sample row from 'ValidatedQA': {sample_row}")
+                logger.info(f"Sample row from 'validatedqa': {sample_row}")
             else:
-                logger.warning("The 'ValidatedQA' table is empty.")
+                logger.warning("The 'validatedqa' table is empty.")
         else:
-            logger.warning("The 'ValidatedQA' table does not exist in the database.")
+            logger.warning("The 'validatedqa' table does not exist in the database.")
 
         # Release the database connection
         release_db_connection(conn)
