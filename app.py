@@ -821,7 +821,7 @@ def cache_lookup(query_embedding):
                 best_answer = cached_answer
 
         if best_answer:
-            logger.info(f"Cache hit with similarity {max_similarity:.2f}")
+            logger.info(f"Cache hit with similarity {max_similarity:.2f}, Answer: {best_answer}")
         else:
             logger.info("Cache miss for the query.")
         return best_answer, max_similarity
@@ -950,9 +950,8 @@ async def chat_endpoint(request: Request):
 
         # Step 3: Cache lookup using Redis
         cached_answer, cached_similarity = cache_lookup(user_embedding)
-        if cached_answer and cached_similarity >= CACHE_THRESHOLD:
-            logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}")
-            # Update session context with cached answer
+        if cached_answer and cached_similarity >= CACHE_THRESHOLD and cached_answer.strip():
+            logger.info(f"Cache hit for session {session_id}. Similarity: {cached_similarity:.2f}, Answer: {cached_answer}")
             update_session_context(session_id, raw_question, cached_answer)
             return JSONResponse(
                 content={
@@ -962,11 +961,13 @@ async def chat_endpoint(request: Request):
                     "response_time": f"{time.time() - start_time:.2f} seconds",
                 }
             )
+        else:
+            logger.warning(f"Cache hit but no valid answer or low similarity. Similarity: {cached_similarity:.2f}, Answer: {cached_answer}")
 
         # Step 4: Database search for the best match
         db_answer, confidence, source = await query_validated_qa(user_embedding, question)
-        if db_answer and confidence >= 0.5:
-            logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}")
+        if db_answer and confidence >= 0.5 and db_answer.strip():
+            logger.info(f"Database match found for session {session_id}. Confidence: {confidence:.2f}, Answer: {db_answer}")
 
             # Refine the response with LLaMA
             try:
@@ -997,8 +998,11 @@ async def chat_endpoint(request: Request):
                     "response_time": f"{time.time() - start_time:.2f} seconds",
                 }
             )
+        else:
+            logger.warning(f"Database search did not yield a valid answer. Confidence: {confidence:.2f}, Answer: {db_answer}")
 
         # Step 5: Enhanced fallback response
+        logger.info(f"Fallback triggered for session {session_id}. No valid cache or database match found.")
         fallback_response = await enhanced_fallback_response(question, session_id)
         logger.info(f"Fallback response used for session {session_id}: {fallback_response}")
 
@@ -1032,7 +1036,6 @@ async def chat_endpoint(request: Request):
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
     finally:
         REQUEST_LATENCY.observe(time.time() - start_time)  # Record latency explicitly
-
 
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
