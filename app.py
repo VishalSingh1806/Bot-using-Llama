@@ -760,35 +760,78 @@ async def health_check():
 def test_db_connection():
     """Test the PostgreSQL database connection and ensure tables exist."""
     try:
+        logger.info("Starting PostgreSQL database connection test...")
+
+        # Attempt to connect to the database
         conn = connect_db()
+        if not conn:
+            logger.error("Failed to establish a database connection.")
+            return
+
+        logger.info("Database connection established successfully.")
         cursor = conn.cursor()
 
-        # Check the existence of tables
+        # Check the existence of tables in the database
+        logger.info("Checking for tables in the database...")
         cursor.execute("""
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public';
         """)
         tables = cursor.fetchall()
-        logger.info(f"Tables in the PostgreSQL database: {tables}")
+        if tables:
+            logger.info(f"Tables found in the database: {[table[0] for table in tables]}")
+        else:
+            logger.warning("No tables found in the database.")
 
-        # Check `validatedqa` table structure
+        # Check if the `validatedqa` table exists
         if ("validatedqa",) in tables:
+            logger.info("The 'validatedqa' table exists. Checking its structure...")
+
+            # Retrieve and log the columns in the `validatedqa` table
             cursor.execute("""
                 SELECT column_name, data_type
                 FROM information_schema.columns
                 WHERE table_name = 'validatedqa';
             """)
             columns = cursor.fetchall()
-            logger.info(f"Columns in validatedqa table: {columns}")
-        else:
-            logger.warning("validatedqa table not found in the PostgreSQL database.")
+            if columns:
+                logger.info(f"Columns in 'validatedqa' table: {columns}")
+            else:
+                logger.warning("The 'validatedqa' table has no columns or is inaccessible.")
 
+            # Check if the `validatedqa` table contains any data
+            logger.info("Checking for data in the 'validatedqa' table...")
+            cursor.execute("SELECT COUNT(*) FROM validatedqa;")
+            row_count = cursor.fetchone()[0]
+            if row_count > 0:
+                logger.info(f"The 'validatedqa' table contains {row_count} rows.")
+
+                # Fetch a sample row for verification
+                cursor.execute("SELECT * FROM validatedqa LIMIT 1;")
+                sample_row = cursor.fetchone()
+                logger.info(f"Sample row from 'validatedqa': {sample_row}")
+            else:
+                logger.warning("The 'validatedqa' table is empty.")
+        else:
+            logger.warning("The 'validatedqa' table does not exist in the database.")
+
+        # Release the database connection
         release_db_connection(conn)
+        logger.info("Database connection test completed successfully.")
+
     except psycopg2.Error as e:
-        logger.error(f"PostgreSQL connection test failed: {e}")
+        logger.error(f"PostgreSQL connection test failed with an error: {e}")
     except Exception as ex:
         logger.exception(f"Unexpected error during PostgreSQL connection test: {ex}")
+    finally:
+        # Ensure the connection is released even if an error occurs
+        try:
+            if conn:
+                release_db_connection(conn)
+                logger.info("Database connection released.")
+        except Exception as release_error:
+            logger.warning(f"Error while releasing database connection: {release_error}")
 
 @app.get("/session/{session_id}")
 async def get_session_details(session_id: str):
