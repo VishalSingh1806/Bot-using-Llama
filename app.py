@@ -279,13 +279,6 @@ def load_sentence_bert():
         logger.exception("Failed to load Sentence-BERT model")
         raise RuntimeError(f"Failed to load Sentence-BERT model: {e}")
 
-
-def convert_to_native(value):
-    """Convert numpy types to native Python types."""
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
-
 # Suppress symlink warnings for Hugging Face cache (Windows-specific)
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="cache-system uses symlinks by default")
