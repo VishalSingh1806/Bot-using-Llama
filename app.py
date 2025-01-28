@@ -1424,42 +1424,6 @@ async def collect_user_data(request: Request):
             status_code=500,
         )
 
-def debug_redis_cache():
-    """Print all cached keys and their values for debugging."""
-    try:
-        for key in redis_client.scan_iter("query_cache:*"):
-            cached_data = redis_client.hgetall(key)
-            logger.info(f"Key: {key}, Data: {cached_data}")
-    except Exception as e:
-        logger.error(f"Error while debugging Redis cache: {e}")
-
-def repopulate_redis_cache():
-    """Repopulate Redis cache from the validatedqa table in the database."""
-    try:
-        conn = connect_db()
-        cursor = conn.cursor()
-
-        # Fetch all rows from validatedqa
-        cursor.execute("SELECT question, answer, question_embedding FROM validatedqa")
-        rows = cursor.fetchall()
-
-        for row in rows:
-            question, answer, question_embedding = row
-            redis_client.hset(
-                f"query_cache:{question}",
-                mapping={
-                    "embedding": json.dumps(np.frombuffer(question_embedding, dtype=np.float32).tolist()),
-                    "answer": answer,
-                },
-            )
-            logger.info(f"Cached question: {question}")
-
-        release_db_connection(conn)
-        logger.info("Redis cache repopulated successfully.")
-
-    except Exception as e:
-        logger.exception("Error repopulating Redis cache")
-
 async def precompute_and_store_embeddings():
     """Fetch questions and answers from the database, compute embeddings, and store them in Redis."""
     try:
